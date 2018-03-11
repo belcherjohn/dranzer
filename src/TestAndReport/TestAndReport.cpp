@@ -16,6 +16,8 @@
 #include <Shlwapi.h>
 #include <DispEx.h>
 #include <exdisp.h>
+#include <varargs.h>
+#include <sal.h>
 
 #include "string_m.h"
 #include "KillApplication.h"
@@ -92,17 +94,17 @@ static int      TestProperites(IDispatch *pIDispatch, DWORD Level);
 static int      Get_CLSID_From_String(TCHAR *pCLSID_String, CLSID *clsid);
 static int      Get_CLSID_Description(TCHAR *pCLSID_String, TCHAR *Description, DWORD DescriptionLength);
 static int      SetArgument(VARIANTARG *arg, BSTR BigString);
-static int      WriteText(HANDLE hFile, char *Text);
+static int      WriteText(HANDLE hFile, _In_z_ _Printf_format_string_ const char *Format, ...);
 static void     ParseArguments(int argc, _TCHAR* argv[]);
 static void     PrintUsage(_TCHAR* argv[]);
 static int      PrintInterfaceInfo(IDispatch *pIDispatch);
 static int      IELoadUrl(char * Url);
 static int      Get_COM_FileName(TCHAR *pCLSID_String, TCHAR *FileName, DWORD FileNameLength);
 static int      PrintFileInfo(HANDLE handle, TCHAR *FileName);
-static char *   GetArgumentStringEquivalent(USHORT *arg);
+static const char *   GetArgumentStringEquivalent(USHORT *arg);
 static int      Generate_HTML_PARAMS_Test_File(char *FileName, char *CLSID);
 static int      IELoadUrlPARAMS(char * Url, DWORD Timeout);
-static void     PrintVariant(VARIANT &var);
+//static void     PrintVariant(VARIANT &var);
 static HANDLE   Create_HTML_PARAMS_Test_File(char *FileName, char *CLSID);
 static int      TestParamsViaBinaryScan(CLSID *clsid);
 static int      GetIeVersion(DWORD * Major, DWORD * Minor, DWORD *BuildNo, DWORD *SubBuildNo);
@@ -119,14 +121,14 @@ static TStringList *   FindString(char *String);
 static void            RemoveString(TStringList *pNode);
 static void            DeleteStringList(void);
 static int             TestParamsPropertyBag(CLSID *clsid);
-static void            PrintStringList(void);
+//static void            PrintStringList(void);
 static BOOL            GenerateVariantText(VARIANT &var, LPCOLESTR pwszPropName, HANDLE hfile);
 static BOOL            CALLBACK EnumWindowsCallback(HWND hwnd, LPARAM lParam);
 static void            ActivateControlInIE(void);
 static BOOL CALLBACK   EnumChildWindowCallback(HWND hwnd, LPARAM lParam);
 
 static DWORD           ComputeInitialLoadTime(char *FileName);
-static void            dumphex(unsigned char *dptr, int size);
+//static void            dumphex(unsigned char *dptr, int size);
 
 static BYTE	             *ControlLoadedInMemory = NULL;
 static DWORD              MemoryNumBytes = 0;
@@ -138,7 +140,6 @@ static TStringList       *StringListTail = NULL;
 static char          * GetExceptionName(DWORD ExceptionCode);
 static TCHAR           COM_FileName[MAX_PATH] = { 0 };
 static TExecutionMode  ExecutionMode = NONE;
-static char            TempTextBuffer[2048];
 static HANDLE          hLogFile = NULL;
 static bool            COM_Object_Exeception_Occurred = false;
 static char          * CLSID_String = NULL;
@@ -232,48 +233,43 @@ int _tmain(int argc, _TCHAR* argv[])
 		}
 	}
 	CoInitialize(NULL);
-	sprintf(TempTextBuffer, "*******************************************************************************\r\n");
-	WriteText(hLogFile, TempTextBuffer);
+	WriteText(hLogFile, "*******************************************************************************\r\n");
 
 	if (ExecutionMode == TEST_CONTROL)
 	{
-		sprintf(TempTextBuffer, "Testing COM Object - %s %s\r\n", CLSID_String, CLSID_Description);
+		WriteText(hLogFile, "Testing COM Object - %s %s\r\n", CLSID_String, CLSID_Description);
 	}
 	else if (ExecutionMode == IE_LOAD)
 	{
-		sprintf(TempTextBuffer, "Loading COM Object in to IE - %s %s\r\n", CLSID_String, CLSID_Description);
+		WriteText(hLogFile, "Loading COM Object in to IE - %s %s\r\n", CLSID_String, CLSID_Description);
 	}
 	else if (ExecutionMode == PARAMS_IN_IE_PROPBAG)
 	{
-		sprintf(TempTextBuffer, "Testing COM Object PARAMS (Property Bag) in IE - %s %s\r\n", CLSID_String, CLSID_Description);
+		WriteText(hLogFile, "Testing COM Object PARAMS (Property Bag) in IE - %s %s\r\n", CLSID_String, CLSID_Description);
 	}
 	else if (ExecutionMode == PARAMS_IN_IE_BINARY_SCAN)
 	{
-		sprintf(TempTextBuffer, "Testing COM Object PARAMS (Binary Scan) in IE - %s %s\r\n", CLSID_String, CLSID_Description);
+		WriteText(hLogFile, "Testing COM Object PARAMS (Binary Scan) in IE - %s %s\r\n", CLSID_String, CLSID_Description);
 	}
 	else if (ExecutionMode == GEN_INTERFACE)
 	{
-		sprintf(TempTextBuffer, "Interface for COM Object - %s %s\r\n", CLSID_String, CLSID_Description);
+		WriteText(hLogFile, "Interface for COM Object - %s %s\r\n", CLSID_String, CLSID_Description);
 	}
 	else if (ExecutionMode == PRINT_COM_OBJECT_INFORMATION)
 	{
-		sprintf(TempTextBuffer, "Details for COM Object - %s %s\r\n", CLSID_String, CLSID_Description);
+		WriteText(hLogFile, "Details for COM Object - %s %s\r\n", CLSID_String, CLSID_Description);
 	}
-	WriteText(hLogFile, TempTextBuffer);
+
 	if (HaveCOM_Filename) PrintFileInfo(hLogFile, COM_FileName);
 	else
 	{
-		sprintf(TempTextBuffer, "*******************************************************************************\r\n");
-		WriteText(hLogFile, TempTextBuffer);
+		WriteText(hLogFile, "*******************************************************************************\r\n");
 
-		sprintf(TempTextBuffer, "%-20s: %s\r\n", "COM Object Filename", "[UNKNOWN]");
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "*******************************************************************************\r\n");
-		WriteText(hLogFile, TempTextBuffer);
+		WriteText(hLogFile, "%-20s: %s\r\n", "COM Object Filename", "[UNKNOWN]");
+		WriteText(hLogFile, "*******************************************************************************\r\n");
 
 	}
-	sprintf(TempTextBuffer, "*******************************************************************************\r\n");
-	WriteText(hLogFile, TempTextBuffer);
+	WriteText(hLogFile, "*******************************************************************************\r\n");
 
 	if (ExecutionMode == TEST_CONTROL)
 	{
@@ -332,17 +328,12 @@ int _tmain(int argc, _TCHAR* argv[])
 	{
 		try
 		{
-			sprintf(TempTextBuffer, "*****************************\r\n");
-			WriteText(hLogFile, TempTextBuffer);
-			sprintf(TempTextBuffer, "***   Access Violation    ***\r\n");
-			WriteText(hLogFile, TempTextBuffer);
-			sprintf(TempTextBuffer, "*****************************\r\n");
-			WriteText(hLogFile, TempTextBuffer);
-			sprintf(TempTextBuffer, "%s at 0x%p :Bad %s on 0x%p\r\n",
+			WriteText(hLogFile, "*****************************\r\n");
+			WriteText(hLogFile, "***   Access Violation    ***\r\n");
+			WriteText(hLogFile, "*****************************\r\n");
+			WriteText(hLogFile, "%s at 0x%p :Bad %s on 0x%p\r\n",
 				e.what(), e.where(), e.isWrite() ? "write" : "read", e.badAddress());
-			WriteText(hLogFile, TempTextBuffer);
-			sprintf(TempTextBuffer, "*****************************\r\n");
-			WriteText(hLogFile, TempTextBuffer);
+			WriteText(hLogFile, "*****************************\r\n");
 			CoUninitialize();
 			CloseHandle(hLogFile);
 			return(COM_OBJECT_EXECEPTION_OCCURRED);
@@ -356,17 +347,12 @@ int _tmain(int argc, _TCHAR* argv[])
 	{
 		try
 		{
-			sprintf(TempTextBuffer, "*****************************\r\n");
-			WriteText(hLogFile, TempTextBuffer);
-			sprintf(TempTextBuffer, "***   Win32 Exception     ***\r\n");
-			WriteText(hLogFile, TempTextBuffer);
-			sprintf(TempTextBuffer, "*****************************\r\n");
-			WriteText(hLogFile, TempTextBuffer);
-			sprintf(TempTextBuffer, "%s (code %x) at 0x%p\r\n",
+			WriteText(hLogFile, "*****************************\r\n");
+			WriteText(hLogFile, "***   Win32 Exception     ***\r\n");
+			WriteText(hLogFile, "*****************************\r\n");
+			WriteText(hLogFile, "%s (code %x) at 0x%p\r\n",
 				e.what(), e.code(), e.where());
-			WriteText(hLogFile, TempTextBuffer);
-			sprintf(TempTextBuffer, "*****************************\r\n");
-			WriteText(hLogFile, TempTextBuffer);
+			WriteText(hLogFile, "*****************************\r\n");
 			CoUninitialize();
 			CloseHandle(hLogFile);
 			return(COM_OBJECT_EXECEPTION_OCCURRED);
@@ -378,8 +364,7 @@ int _tmain(int argc, _TCHAR* argv[])
 
 	try
 	{
-		sprintf(TempTextBuffer, "\r\n\r\n");
-		WriteText(hLogFile, TempTextBuffer);
+		WriteText(hLogFile, "\r\n\r\n");
 		CoUninitialize();
 		CloseHandle(hLogFile);
 	}
@@ -665,22 +650,38 @@ static int GetIeVersion(DWORD * Major, DWORD * Minor, DWORD *BuildNo, DWORD *Sub
 /// static WriteText(HANDLE hFile,char *Text)                                         //
 ///                                                                                   //
 ////////////////////////////////////////////////////////////////////////////////////////
-
-static int WriteText(HANDLE hFile, char *Text)
+static bool WriteText(HANDLE hFile, _In_z_ _Printf_format_string_ const char *Format, ...)
 {
-	DWORD BytesToWrite = (DWORD)strlen(Text);
-	DWORD BytesWritten = 0;
+	va_list va;
+	va_start(va, Format);
+	auto len = vsnprintf(nullptr, 0, Format, va);
+	va_end(va);
+	if (len < 0)
+		return false;
 
-	while (BytesToWrite)
+	char fixed[1024];
+	auto buf = len < sizeof(fixed) ? fixed : new char[len + 1];
+
+	va_start(va, Format);
+	vsprintf_s(buf, len + 1, Format, va);
+	va_end(va);
+
+	while (len > 0)
 	{
-		if (WriteFile(hFile, Text, BytesToWrite, &BytesWritten, 0) == 0)
+		DWORD BytesWritten;
+		if (::WriteFile(hFile, buf, len, &BytesWritten, 0) == 0)
 		{
-			return -1;
+			if (buf != fixed)
+				delete[] buf;
+			return false;
 		}
-		Text += BytesWritten;
-		BytesToWrite -= BytesWritten;
+		buf += BytesWritten;
+		len -= BytesWritten;
 	}
-	return(0);
+
+	if (buf != fixed)
+		delete[] buf;
+	return true;
 }
 ////////////////////////////////////////////////////////////////////////////////////////
 ///                                                                                   //
@@ -1041,45 +1042,33 @@ static int PrintFileInfo(HANDLE handle, TCHAR *FileName)
 
 
 	dwLen = GetFileVersionInfoSize(FileName, &dwHandle);
-	sprintf(TempTextBuffer, "*******************************************************************************\r\n");
-	WriteText(handle, TempTextBuffer);
-
-	sprintf(TempTextBuffer, "%-20s: %s\r\n", "COM Object Filename", FileName);
-	WriteText(handle, TempTextBuffer);
+	WriteText(handle, "*******************************************************************************\r\n");
+	WriteText(handle, "%-20s: %s\r\n", "COM Object Filename", FileName);
 
 	if (!dwLen)
 	{
-		sprintf(TempTextBuffer, "%-20s: %s\r\n", "Version Info", "not found");
-		WriteText(handle, TempTextBuffer);
-		sprintf(TempTextBuffer, "*******************************************************************************\r\n");
-		WriteText(handle, TempTextBuffer);
+		WriteText(handle, "%-20s: %s\r\n", "Version Info", "not found");
+		WriteText(handle, "*******************************************************************************\r\n");
 		return -1;
 	}
 	if ((lpData = (LPTSTR)malloc(dwLen)) == NULL)return -1;
 	if (!GetFileVersionInfo(FileName, dwHandle, dwLen, lpData))
 	{
 		free(lpData);
-		sprintf(TempTextBuffer, "%-20s: %s\r\n", "Version Info", "not found");
-		WriteText(handle, TempTextBuffer);
-		sprintf(TempTextBuffer, "*******************************************************************************\r\n");
-		WriteText(handle, TempTextBuffer);
+		WriteText(handle, "%-20s: %s\r\n", "Version Info", "not found");
+		WriteText(handle, "*******************************************************************************\r\n");
 		return -1;
 	}
 	if (!VerQueryValue(lpData, "\\", (LPVOID *)&pFileInfo, (PUINT)&BufLen))
 	{
-		sprintf(TempTextBuffer, "%-20s: %s\r\n", "Version Info", "not found");
-		WriteText(handle, TempTextBuffer);
+		WriteText(handle, "%-20s: %s\r\n", "Version Info", "not found");
 	}
 	else
 	{
-		sprintf(TempTextBuffer, "%-20s: %d\r\n", "Major Version", HIWORD(pFileInfo->dwFileVersionMS));
-		WriteText(handle, TempTextBuffer);
-		sprintf(TempTextBuffer, "%-20s: %d\r\n", "Minor Version", LOWORD(pFileInfo->dwFileVersionMS));
-		WriteText(handle, TempTextBuffer);
-		sprintf(TempTextBuffer, "%-20s: %d\r\n", "Build Number", HIWORD(pFileInfo->dwFileVersionLS));
-		WriteText(handle, TempTextBuffer);
-		sprintf(TempTextBuffer, "%-20s: %d\r\n", "Revision Number", LOWORD(pFileInfo->dwFileVersionLS));
-		WriteText(handle, TempTextBuffer);
+		WriteText(handle, "%-20s: %d\r\n", "Major Version", HIWORD(pFileInfo->dwFileVersionMS));
+		WriteText(handle, "%-20s: %d\r\n", "Minor Version", LOWORD(pFileInfo->dwFileVersionMS));
+		WriteText(handle, "%-20s: %d\r\n", "Build Number", HIWORD(pFileInfo->dwFileVersionLS));
+		WriteText(handle, "%-20s: %d\r\n", "Revision Number", LOWORD(pFileInfo->dwFileVersionLS));
 	}
 
 	// find best matching language and codepage
@@ -1103,151 +1092,138 @@ static int PrintFileInfo(HANDLE handle, TCHAR *FileName)
 		"ProductVersion");
 	if (!VerQueryValue(lpData, StringInfo, (LPVOID *)&lpBuffer, (PUINT)&BufLen))
 	{
-		sprintf(TempTextBuffer, "%-20s: %s\r\n", "Product Version", "not found");
+		WriteText(handle, "%-20s: %s\r\n", "Product Version", "not found");
 	}
 	else
 	{
-		sprintf(TempTextBuffer, "%-20s: %s\r\n", "Product Version", lpBuffer);
+		WriteText(handle, "%-20s: %s\r\n", "Product Version", lpBuffer);
 	}
-	WriteText(handle, TempTextBuffer);
 
 	sprintf(StringInfo, "\\StringFileInfo\\%04X%04X\\%s", dwLangCode & 0x0000FFFF, (dwLangCode & 0xFFFF0000) >> 16,
 		"ProductName");
 	if (!VerQueryValue(lpData, StringInfo, (LPVOID *)&lpBuffer, (PUINT)&BufLen))
 	{
-		sprintf(TempTextBuffer, "%-20s: %s\r\n", "Product Name", "not found");
+		WriteText(handle, "%-20s: %s\r\n", "Product Name", "not found");
 	}
 	else
 	{
-		sprintf(TempTextBuffer, "%-20s: %s\r\n", "Product Name", lpBuffer);
+		WriteText(handle, "%-20s: %s\r\n", "Product Name", lpBuffer);
 	}
-	WriteText(handle, TempTextBuffer);
 
 
 	sprintf(StringInfo, "\\StringFileInfo\\%04X%04X\\%s", dwLangCode & 0x0000FFFF, (dwLangCode & 0xFFFF0000) >> 16,
 		"CompanyName");
 	if (!VerQueryValue(lpData, StringInfo, (LPVOID *)&lpBuffer, (PUINT)&BufLen))
 	{
-		sprintf(TempTextBuffer, "%-20s: %s\r\n", "Company Name", "not found");
+		WriteText(handle, "%-20s: %s\r\n", "Company Name", "not found");
 	}
 	else
 	{
-		sprintf(TempTextBuffer, "%-20s: %s\r\n", "Company Name", lpBuffer);
+		WriteText(handle, "%-20s: %s\r\n", "Company Name", lpBuffer);
 	}
-	WriteText(handle, TempTextBuffer);
 
 	sprintf(StringInfo, "\\StringFileInfo\\%04X%04X\\%s", dwLangCode & 0x0000FFFF, (dwLangCode & 0xFFFF0000) >> 16,
 		"LegalCopyright");
 	if (!VerQueryValue(lpData, StringInfo, (LPVOID *)&lpBuffer, (PUINT)&BufLen))
 	{
-		sprintf(TempTextBuffer, "%-20s: %s\r\n", "Legal Copyright", "not found");
+		WriteText(handle, "%-20s: %s\r\n", "Legal Copyright", "not found");
 	}
 	else
 	{
-		sprintf(TempTextBuffer, "%-20s: %s\r\n", "Legal Copyright", lpBuffer);
+		WriteText(handle, "%-20s: %s\r\n", "Legal Copyright", lpBuffer);
 	}
-	WriteText(handle, TempTextBuffer);
 
 	sprintf(StringInfo, "\\StringFileInfo\\%04X%04X\\%s", dwLangCode & 0x0000FFFF, (dwLangCode & 0xFFFF0000) >> 16,
 		"Comments");
 	if (!VerQueryValue(lpData, StringInfo, (LPVOID *)&lpBuffer, (PUINT)&BufLen))
 	{
-		sprintf(TempTextBuffer, "%-20s: %s\r\n", "Comments", "not found");
+		WriteText(handle, "%-20s: %s\r\n", "Comments", "not found");
 	}
 	else
 	{
-		sprintf(TempTextBuffer, "%-20s: %s\r\n", "Comments", lpBuffer);
+		WriteText(handle, "%-20s: %s\r\n", "Comments", lpBuffer);
 	}
-	WriteText(handle, TempTextBuffer);
 
 	sprintf(StringInfo, "\\StringFileInfo\\%04X%04X\\%s", dwLangCode & 0x0000FFFF, (dwLangCode & 0xFFFF0000) >> 16,
 		"FileDescription");
 	if (!VerQueryValue(lpData, StringInfo, (LPVOID *)&lpBuffer, (PUINT)&BufLen))
 	{
-		sprintf(TempTextBuffer, "%-20s: %s\r\n", "File Description", "not found");
+		WriteText(handle, "%-20s: %s\r\n", "File Description", "not found");
 	}
 	else
 	{
-		sprintf(TempTextBuffer, "%-20s: %s\r\n", "File Description", lpBuffer);
+		WriteText(handle, "%-20s: %s\r\n", "File Description", lpBuffer);
 	}
-	WriteText(handle, TempTextBuffer);
 
 	sprintf(StringInfo, "\\StringFileInfo\\%04X%04X\\%s", dwLangCode & 0x0000FFFF, (dwLangCode & 0xFFFF0000) >> 16,
 		"FileVersion");
 	if (!VerQueryValue(lpData, StringInfo, (LPVOID *)&lpBuffer, (PUINT)&BufLen))
 	{
-		sprintf(TempTextBuffer, "%-20s: %s\r\n", "File Version", "not found");
+		WriteText(handle, "%-20s: %s\r\n", "File Version", "not found");
 	}
 	else
 	{
-		sprintf(TempTextBuffer, "%-20s: %s\r\n", "File Version", lpBuffer);
+		WriteText(handle, "%-20s: %s\r\n", "File Version", lpBuffer);
 	}
-	WriteText(handle, TempTextBuffer);
 
 	sprintf(StringInfo, "\\StringFileInfo\\%04X%04X\\%s", dwLangCode & 0x0000FFFF, (dwLangCode & 0xFFFF0000) >> 16,
 		"InternalName");
 	if (!VerQueryValue(lpData, StringInfo, (LPVOID *)&lpBuffer, (PUINT)&BufLen))
 	{
-		sprintf(TempTextBuffer, "%-20s: %s\r\n", "Internal Name", "not found");
+		WriteText(handle, "%-20s: %s\r\n", "Internal Name", "not found");
 	}
 	else
 	{
-		sprintf(TempTextBuffer, "%-20s: %s\r\n", "Internal Name", lpBuffer);
+		WriteText(handle, "%-20s: %s\r\n", "Internal Name", lpBuffer);
 	}
-	WriteText(handle, TempTextBuffer);
 
 	sprintf(StringInfo, "\\StringFileInfo\\%04X%04X\\%s", dwLangCode & 0x0000FFFF, (dwLangCode & 0xFFFF0000) >> 16,
 		"LegalTrademarks");
 	if (!VerQueryValue(lpData, StringInfo, (LPVOID *)&lpBuffer, (PUINT)&BufLen))
 	{
-		sprintf(TempTextBuffer, "%-20s: %s\r\n", "Legal Trademarks", "not found");
+		WriteText(handle, "%-20s: %s\r\n", "Legal Trademarks", "not found");
 	}
 	else
 	{
-		sprintf(TempTextBuffer, "%-20s: %s\r\n", "Legal Trademarks", lpBuffer);
+		WriteText(handle, "%-20s: %s\r\n", "Legal Trademarks", lpBuffer);
 	}
-	WriteText(handle, TempTextBuffer);
 
 	sprintf(StringInfo, "\\StringFileInfo\\%04X%04X\\%s", dwLangCode & 0x0000FFFF, (dwLangCode & 0xFFFF0000) >> 16,
 		"PrivateBuild");
 	if (!VerQueryValue(lpData, StringInfo, (LPVOID *)&lpBuffer, (PUINT)&BufLen))
 	{
-		sprintf(TempTextBuffer, "%-20s: %s\r\n", "Private Build", "not found");
+		WriteText(handle, "%-20s: %s\r\n", "Private Build", "not found");
 	}
 	else
 	{
-		sprintf(TempTextBuffer, "%-20s: %s\r\n", "Private Build", lpBuffer);
+		WriteText(handle, "%-20s: %s\r\n", "Private Build", lpBuffer);
 	}
-	WriteText(handle, TempTextBuffer);
 
 	sprintf(StringInfo, "\\StringFileInfo\\%04X%04X\\%s", dwLangCode & 0x0000FFFF, (dwLangCode & 0xFFFF0000) >> 16,
 		"SpecialBuild");
 	if (!VerQueryValue(lpData, StringInfo, (LPVOID *)&lpBuffer, (PUINT)&BufLen))
 	{
-		sprintf(TempTextBuffer, "%-20s: %s\r\n", "Special Build", "not found");
+		WriteText(handle, "%-20s: %s\r\n", "Special Build", "not found");
 	}
 	else
 	{
-		sprintf(TempTextBuffer, "%-20s: %s\r\n", "Special Build", lpBuffer);
+		WriteText(handle, "%-20s: %s\r\n", "Special Build", lpBuffer);
 	}
-	WriteText(handle, TempTextBuffer);
 
 	sprintf(StringInfo, "\\StringFileInfo\\%04X%04X\\%s", dwLangCode & 0x0000FFFF, (dwLangCode & 0xFFFF0000) >> 16,
 		"Language");
 	if (!VerQueryValue(lpData, StringInfo, (LPVOID *)&lpBuffer, (PUINT)&BufLen))
 	{
-		sprintf(TempTextBuffer, "%-20s: %s\r\n", "Language", "not found");
+		WriteText(handle, "%-20s: %s\r\n", "Language", "not found");
 	}
 	else
 	{
-		sprintf(TempTextBuffer, "%-20s: %s\r\n", "Language", lpBuffer);
+		WriteText(handle, "%-20s: %s\r\n", "Language", lpBuffer);
 	}
-	WriteText(handle, TempTextBuffer);
 
 	free(lpData);
 
-	sprintf(TempTextBuffer, "*******************************************************************************\r\n");
-	WriteText(handle, TempTextBuffer);
+	WriteText(handle, "*******************************************************************************\r\n");
 	return(0);
 }
 
@@ -1478,8 +1454,7 @@ static int PrintComObjectInformation(CLSID *clsid)
 
 	if (ProgIDFromCLSID(*clsid, &ProgIdAsWide) == S_OK)
 	{
-		sprintf(TempTextBuffer, "ProgId is : %ws\r\n", ProgIdAsWide);
-		WriteText(hLogFile, TempTextBuffer);
+		WriteText(hLogFile, "ProgId is : %ws\r\n", ProgIdAsWide);
 		CoTaskMemFree(ProgIdAsWide);
 	}
 
@@ -1490,8 +1465,7 @@ static int PrintComObjectInformation(CLSID *clsid)
 		CoTaskMemFree(CLSID_ForKB_AsWide);
 		if (KillBit == 1)
 		{
-			sprintf(TempTextBuffer, "Kill Bit : true\r\n");
-			WriteText(hLogFile, TempTextBuffer);
+			WriteText(hLogFile, "Kill Bit : true\r\n");
 		}
 	}
 
@@ -1529,19 +1503,15 @@ static int PrintComObjectInformation(CLSID *clsid)
 			return(COM_OBJECTSAFETY_SET_INTERFACE_OPT_FAULT);
 		}
 
-		sprintf(TempTextBuffer, "IDispatchEx SafeForScripting : %s\r\n", IDispatchEx_SafeForScripting ? "true" : "false");
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "IDispatch SafeForScripting   : %s\r\n", IDispatch_SafeForScripting ? "true" : "false");
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "IPersist SafeForUntrustedData: %s\r\n", IPersist_SafeForUntrustedData ? "true" : "false");
-		WriteText(hLogFile, TempTextBuffer);
+		WriteText(hLogFile, "IDispatchEx SafeForScripting : %s\r\n", IDispatchEx_SafeForScripting ? "true" : "false");
+		WriteText(hLogFile, "IDispatch SafeForScripting   : %s\r\n", IDispatch_SafeForScripting ? "true" : "false");
+		WriteText(hLogFile, "IPersist SafeForUntrustedData: %s\r\n", IPersist_SafeForUntrustedData ? "true" : "false");
 
 		pIObjectSafety->Release();
 	}
 	else
 	{
-		sprintf(TempTextBuffer, "IObjectSafety not implemented\r\n");
-		WriteText(hLogFile, TempTextBuffer);
+		WriteText(hLogFile, "IObjectSafety not implemented\r\n");
 	}
 
 	LPOLESTR CLSID_String_Wide;
@@ -1572,31 +1542,24 @@ static int PrintComObjectInformation(CLSID *clsid)
 
 
 
-	sprintf(TempTextBuffer, "Registry entry safe for scripting: %s\r\n", RegistryEntrySafeForScripting ? "true" : "false");
-	WriteText(hLogFile, TempTextBuffer);
-	sprintf(TempTextBuffer, "Registry entry safe for initializing persistent data: %s\r\n", RegistryEntrySafeForInitializingPersistentData ? "true" : "false");
-	WriteText(hLogFile, TempTextBuffer);
+	WriteText(hLogFile, "Registry entry safe for scripting: %s\r\n", RegistryEntrySafeForScripting ? "true" : "false");
+	WriteText(hLogFile, "Registry entry safe for initializing persistent data: %s\r\n", RegistryEntrySafeForInitializingPersistentData ? "true" : "false");
 	if (HaveIObjectSaftey)
 	{
 		if ((IDispatchEx_SafeForScripting) || (IDispatch_SafeForScripting))
 		{
-			sprintf(TempTextBuffer, "Object safe for scripting: true\r\n");
-			WriteText(hLogFile, TempTextBuffer);
+			WriteText(hLogFile, "Object safe for scripting: true\r\n");
 		}
 		else
 		{
-			sprintf(TempTextBuffer, "Object safe for scripting: false\r\n");
-			WriteText(hLogFile, TempTextBuffer);
+			WriteText(hLogFile, "Object safe for scripting: false\r\n");
 		}
-		sprintf(TempTextBuffer, "Object safe for init: %s\r\n", IPersist_SafeForUntrustedData ? "true" : "false");
-		WriteText(hLogFile, TempTextBuffer);
+		WriteText(hLogFile, "Object safe for init: %s\r\n", IPersist_SafeForUntrustedData ? "true" : "false");
 	}
 	else
 	{
-		sprintf(TempTextBuffer, "Object safe for scripting: %s\r\n", RegistryEntrySafeForScripting ? "true" : "false");
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "Object safe for init: %s\r\n", RegistryEntrySafeForInitializingPersistentData ? "true" : "false");
-		WriteText(hLogFile, TempTextBuffer);
+		WriteText(hLogFile, "Object safe for scripting: %s\r\n", RegistryEntrySafeForScripting ? "true" : "false");
+		WriteText(hLogFile, "Object safe for init: %s\r\n", RegistryEntrySafeForInitializingPersistentData ? "true" : "false");
 	}
 
 	return(SUCCESS);
@@ -1630,13 +1593,11 @@ static int PrintInterfaceInfo(IDispatch *pIDispatch)
 
 	if (pTypeInfo->GetDocumentation(-1, &InterfaceName, 0, 0, 0) != S_OK)
 	{
-		sprintf(TempTextBuffer, "Unknown default interface:\r\n");
-		WriteText(hLogFile, TempTextBuffer);
+		WriteText(hLogFile, "Unknown default interface:\r\n");
 	}
 	else
 	{
-		sprintf(TempTextBuffer, "%ws:\r\n", InterfaceName);
-		WriteText(hLogFile, TempTextBuffer);
+		WriteText(hLogFile, "%ws:\r\n", InterfaceName);
 	}
 	for (INT CurrrentFunction = 0; CurrrentFunction < pTypeAttr->cFuncs; CurrrentFunction++)
 	{
@@ -1649,8 +1610,7 @@ static int PrintInterfaceInfo(IDispatch *pIDispatch)
 			hResult |= pTypeInfo->GetDocumentation(FunctionDescription->memid, &methodName, 0, 0, 0);
 			if (hResult)
 			{
-				sprintf(TempTextBuffer, "Error In Name\r\n");
-				WriteText(hLogFile, TempTextBuffer);
+				WriteText(hLogFile, "Error In Name\r\n");
 				pTypeInfo->ReleaseFuncDesc(FunctionDescription);
 				continue;
 			}
@@ -1725,8 +1685,7 @@ static int PrintInterfaceInfo(IDispatch *pIDispatch)
 				delete[] rgBstrNames;
 			}
 			strcat(MethodInformation, ")");
-			sprintf(TempTextBuffer, "%s\r\n", MethodInformation);
-			WriteText(hLogFile, TempTextBuffer);
+			WriteText(hLogFile, "%s\r\n", MethodInformation);
 			pTypeInfo->ReleaseFuncDesc(FunctionDescription);
 		}
 	}
@@ -1860,10 +1819,10 @@ static int SetArgument(VARIANTARG *arg, BSTR BigString)
 }
 ////////////////////////////////////////////////////////////////////////////////////////
 ///                                                                                   //
-/// static char * GetArgumentStringEquivalent(USHORT vt)                              //
+/// static const char * GetArgumentStringEquivalent(USHORT vt)                              //
 ///                                                                                   //
 ////////////////////////////////////////////////////////////////////////////////////////
-static char * GetArgumentStringEquivalent(USHORT vt)
+static const char * GetArgumentStringEquivalent(USHORT vt)
 {
 	switch (vt)
 	{
@@ -2111,8 +2070,7 @@ static int TestProperites(IDispatch *pIDispatch, DWORD Level)
 
 	if (pTypeInfo->GetDocumentation(-1, &InterfaceName, 0, 0, 0) != S_OK)
 	{
-		sprintf(TempTextBuffer, "Unknown default interface:\r\n");
-		WriteText(hLogFile, TempTextBuffer);
+		WriteText(hLogFile, "Unknown default interface:\r\n");
 	}
 
 
@@ -2122,10 +2080,9 @@ static int TestProperites(IDispatch *pIDispatch, DWORD Level)
 		hResult = pTypeInfo->GetFuncDesc(CurrrentFunction, &FunctionDescription);
 		if (hResult != S_OK)
 		{
-			if (hResult == E_OUTOFMEMORY) sprintf(TempTextBuffer, "GetFuncDesc Failed (E_OUTOFMEMORY)\r\n");
-			else if (hResult == E_INVALIDARG)  sprintf(TempTextBuffer, "GetFuncDesc Failed (E_INVALIDARG)\r\n");
-			else sprintf(TempTextBuffer, "GetFuncDesc Failed (0x%x)\r\n", hResult);
-			WriteText(hLogFile, TempTextBuffer);
+			if (hResult == E_OUTOFMEMORY) WriteText(hLogFile, "GetFuncDesc Failed (E_OUTOFMEMORY)\r\n");
+			else if (hResult == E_INVALIDARG)  WriteText(hLogFile, "GetFuncDesc Failed (E_INVALIDARG)\r\n");
+			else WriteText(hLogFile, "GetFuncDesc Failed (0x%x)\r\n", hResult);
 			continue;
 		}
 		if (!(FunctionDescription->wFuncFlags & FUNCFLAG_FRESTRICTED))
@@ -2135,8 +2092,7 @@ static int TestProperites(IDispatch *pIDispatch, DWORD Level)
 			hResult |= pTypeInfo->GetDocumentation(FunctionDescription->memid, &MethodName, 0, 0, 0);
 			if (hResult != S_OK)
 			{
-				sprintf(TempTextBuffer, "Error In Method Name\r\n");
-				WriteText(hLogFile, TempTextBuffer);
+				WriteText(hLogFile, "Error In Method Name\r\n");
 				pTypeInfo->ReleaseFuncDesc(FunctionDescription);
 				continue;
 			}
@@ -2245,8 +2201,7 @@ static int TestProperites(IDispatch *pIDispatch, DWORD Level)
 					Result.pdispVal = NULL;
 					UINT uArgErr;
 
-					sprintf(TempTextBuffer, "Invoking %s - %ws::%s\r\n", PropertyType, InterfaceName, MethodInformation);
-					WriteText(hLogFile, TempTextBuffer);
+					WriteText(hLogFile, "Invoking %s - %ws::%s\r\n", PropertyType, InterfaceName, MethodInformation);
 
 					try {
 						pIDispatch->Invoke(FunctionDescription->memid, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &Parameters, &Result, NULL, &uArgErr);
@@ -2254,52 +2209,34 @@ static int TestProperites(IDispatch *pIDispatch, DWORD Level)
 					catch (const access_violation& e)
 					{
 						COM_Object_Exeception_Occurred = true;
-						sprintf(TempTextBuffer, "*****************************\r\n");
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "***   Access Violation    ***\r\n");
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "*****************************\r\n");
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "Invoked %s - %ws::%s\r\n", PropertyType, InterfaceName, MethodInformation);
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "%s at 0x%p :Bad %s on 0x%p\r\n",
+						WriteText(hLogFile, "*****************************\r\n");
+						WriteText(hLogFile, "***   Access Violation    ***\r\n");
+						WriteText(hLogFile, "*****************************\r\n");
+						WriteText(hLogFile, "Invoked %s - %ws::%s\r\n", PropertyType, InterfaceName, MethodInformation);
+						WriteText(hLogFile, "%s at 0x%p :Bad %s on 0x%p\r\n",
 							e.what(), e.where(), e.isWrite() ? "write" : "read", e.badAddress());
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "*****************************\r\n");
-						WriteText(hLogFile, TempTextBuffer);
+						WriteText(hLogFile, "*****************************\r\n");
 					}
 					catch (const win32_exception& e)
 					{
 						COM_Object_Exeception_Occurred = true;
-						sprintf(TempTextBuffer, "*****************************\r\n");
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "***   Win32 Exception     ***\r\n");
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "*****************************\r\n");
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "Invoked %s - %ws::%s\r\n", PropertyType, InterfaceName, MethodInformation);
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "%s (code %x) at 0x%p\r\n",
+						WriteText(hLogFile, "*****************************\r\n");
+						WriteText(hLogFile, "***   Win32 Exception     ***\r\n");
+						WriteText(hLogFile, "*****************************\r\n");
+						WriteText(hLogFile, "Invoked %s - %ws::%s\r\n", PropertyType, InterfaceName, MethodInformation);
+						WriteText(hLogFile, "%s (code %x) at 0x%p\r\n",
 							e.what(), e.code(), e.where());
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "*****************************\r\n");
-						WriteText(hLogFile, TempTextBuffer);
-
+						WriteText(hLogFile, "*****************************\r\n");
 					}
 
 					if (Result.vt == VT_PTR && !Result.pdispVal)
 					{
 #if LOGINFO
-						sprintf(TempTextBuffer, "*****************************\r\n");
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "***      No Results       ***\r\n");
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "*****************************\r\n");
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "Invoked %s - %ws::%s\r\n", PropertyType, InterfaceName, MethodInformation);
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "*****************************\r\n");
-						WriteText(hLogFile, TempTextBuffer);
+						WriteText(hLogFile, "*****************************\r\n");
+						WriteText(hLogFile, "***      No Results       ***\r\n");
+						WriteText(hLogFile, "*****************************\r\n");
+						WriteText(hLogFile, "Invoked %s - %ws::%s\r\n", PropertyType, InterfaceName, MethodInformation);
+						WriteText(hLogFile, "*****************************\r\n");
 #endif
 					}
 					if (pArguments) delete[] pArguments;
@@ -2313,50 +2250,36 @@ static int TestProperites(IDispatch *pIDispatch, DWORD Level)
 							zero.QuadPart = 0;
 							if (!SetFilePointerEx(hLogFile, zero, &CurrentPos, FILE_CURRENT))
 							{
-								sprintf(TempTextBuffer, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
-								WriteText(hLogFile, TempTextBuffer);
-								sprintf(TempTextBuffer, "Set File Pointer 1 Failed\r\n");
-								WriteText(hLogFile, TempTextBuffer);
-								sprintf(TempTextBuffer, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
-								WriteText(hLogFile, TempTextBuffer);
+								WriteText(hLogFile, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
+								WriteText(hLogFile, "Set File Pointer 1 Failed\r\n");
+								WriteText(hLogFile, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
 							}
-							sprintf(TempTextBuffer, "Recurse from   interface %ws\r\n", InterfaceName);
-							WriteText(hLogFile, TempTextBuffer);
+							WriteText(hLogFile, "Recurse from   interface %ws\r\n", InterfaceName);
 							if (!SetFilePointerEx(hLogFile, zero, &Before, FILE_CURRENT))
 							{
-								sprintf(TempTextBuffer, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
-								WriteText(hLogFile, TempTextBuffer);
-								sprintf(TempTextBuffer, "Set File Pointer 2 Failed\r\n");
-								WriteText(hLogFile, TempTextBuffer);
-								sprintf(TempTextBuffer, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
-								WriteText(hLogFile, TempTextBuffer);
+								WriteText(hLogFile, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
+								WriteText(hLogFile, "Set File Pointer 2 Failed\r\n");
+								WriteText(hLogFile, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
 							}
 							Test_Dispatch_Interface(Result.pdispVal, Level + 1);
 							if (!SetFilePointerEx(hLogFile, zero, &After, FILE_CURRENT))
 							{
-								sprintf(TempTextBuffer, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
-								WriteText(hLogFile, TempTextBuffer);
-								sprintf(TempTextBuffer, "Set File Pointer 3 Failed\r\n");
-								WriteText(hLogFile, TempTextBuffer);
-								sprintf(TempTextBuffer, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
-								WriteText(hLogFile, TempTextBuffer);
+								WriteText(hLogFile, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
+								WriteText(hLogFile, "Set File Pointer 3 Failed\r\n");
+								WriteText(hLogFile, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
 							}
 							if (Before.QuadPart == After.QuadPart)
 							{
 								if (!SetFilePointerEx(hLogFile, CurrentPos, NULL, FILE_BEGIN))
 								{
-									sprintf(TempTextBuffer, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
-									WriteText(hLogFile, TempTextBuffer);
-									sprintf(TempTextBuffer, "Set File Pointer 4 Failed\r\n");
-									WriteText(hLogFile, TempTextBuffer);
-									sprintf(TempTextBuffer, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
-									WriteText(hLogFile, TempTextBuffer);
+									WriteText(hLogFile, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
+									WriteText(hLogFile, "Set File Pointer 4 Failed\r\n");
+									WriteText(hLogFile, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
 								}
 							}
 							else
 							{
-								sprintf(TempTextBuffer, "Recurse return %ws\r\n", InterfaceName);
-								WriteText(hLogFile, TempTextBuffer);
+								WriteText(hLogFile, "Recurse return %ws\r\n", InterfaceName);
 							}
 
 						}
@@ -2368,38 +2291,26 @@ static int TestProperites(IDispatch *pIDispatch, DWORD Level)
 					catch (const access_violation& e)
 					{
 #if LOG_CRASH_ON_FREE
-						sprintf(TempTextBuffer, "*****************************\r\n");
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "***   Access Violation    ***\r\n");
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "*****************************\r\n");
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "Invoked - VariantClear 1\r\n");
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "%s at 0x%p :Bad %s on 0x%p\r\n",
+						WriteText(hLogFile, "*****************************\r\n");
+						WriteText(hLogFile, "***   Access Violation    ***\r\n");
+						WriteText(hLogFile, "*****************************\r\n");
+						WriteText(hLogFile, "Invoked - VariantClear 1\r\n");
+						WriteText(hLogFile, "%s at 0x%p :Bad %s on 0x%p\r\n",
 							e.what(), e.where(), e.isWrite() ? "write" : "read", e.badAddress());
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "*****************************\r\n");
-						WriteText(hLogFile, TempTextBuffer);
+						WriteText(hLogFile, "*****************************\r\n");
 
 #endif
 					}
 					catch (const win32_exception& e)
 					{
 #if LOG_CRASH_ON_FREE
-						sprintf(TempTextBuffer, "*****************************\r\n");
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "***   Win32 Exception     ***\r\n");
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "*****************************\r\n");
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "Invoked - VariantClear 1\r\n");
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "%s (code %x) at 0x%p\r\n",
+						WriteText(hLogFile, "*****************************\r\n");
+						WriteText(hLogFile, "***   Win32 Exception     ***\r\n");
+						WriteText(hLogFile, "*****************************\r\n");
+						WriteText(hLogFile, "Invoked - VariantClear 1\r\n");
+						WriteText(hLogFile, "%s (code %x) at 0x%p\r\n",
 							e.what(), e.code(), e.where());
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "*****************************\r\n");
-						WriteText(hLogFile, TempTextBuffer);
+						WriteText(hLogFile, "*****************************\r\n");
 
 #endif
 					}
@@ -2440,8 +2351,7 @@ static int TestProperites(IDispatch *pIDispatch, DWORD Level)
 					Result.boolVal = VARIANT_FALSE;
 					UINT uArgErr;
 
-					sprintf(TempTextBuffer, "Invoking %s - %ws::%s\r\n", PropertyType, InterfaceName, MethodInformation);
-					WriteText(hLogFile, TempTextBuffer);
+					WriteText(hLogFile, "Invoking %s - %ws::%s\r\n", PropertyType, InterfaceName, MethodInformation);
 
 					try
 					{
@@ -2450,36 +2360,24 @@ static int TestProperites(IDispatch *pIDispatch, DWORD Level)
 					catch (const access_violation& e)
 					{
 						COM_Object_Exeception_Occurred = true;
-						sprintf(TempTextBuffer, "*****************************\r\n");
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "***   Access Violation    ***\r\n");
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "*****************************\r\n");
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "Invoked %s - %ws::%s\r\n", PropertyType, InterfaceName, MethodInformation);
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "%s at 0x%p :Bad %s on 0x%p\r\n",
+						WriteText(hLogFile, "*****************************\r\n");
+						WriteText(hLogFile, "***   Access Violation    ***\r\n");
+						WriteText(hLogFile, "*****************************\r\n");
+						WriteText(hLogFile, "Invoked %s - %ws::%s\r\n", PropertyType, InterfaceName, MethodInformation);
+						WriteText(hLogFile, "%s at 0x%p :Bad %s on 0x%p\r\n",
 							e.what(), e.where(), e.isWrite() ? "write" : "read", e.badAddress());
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "*****************************\r\n");
-						WriteText(hLogFile, TempTextBuffer);
+						WriteText(hLogFile, "*****************************\r\n");
 					}
 					catch (const win32_exception& e)
 					{
 						COM_Object_Exeception_Occurred = true;
-						sprintf(TempTextBuffer, "*****************************\r\n");
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "***   Win32 Exception     ***\r\n");
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "*****************************\r\n");
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "Invoked %s - %ws::%s\r\n", PropertyType, InterfaceName, MethodInformation);
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "%s (code %x) at 0x%p\r\n",
+						WriteText(hLogFile, "*****************************\r\n");
+						WriteText(hLogFile, "***   Win32 Exception     ***\r\n");
+						WriteText(hLogFile, "*****************************\r\n");
+						WriteText(hLogFile, "Invoked %s - %ws::%s\r\n", PropertyType, InterfaceName, MethodInformation);
+						WriteText(hLogFile, "%s (code %x) at 0x%p\r\n",
 							e.what(), e.code(), e.where());
-						WriteText(hLogFile, TempTextBuffer);
-						sprintf(TempTextBuffer, "*****************************\r\n");
-						WriteText(hLogFile, TempTextBuffer);
+						WriteText(hLogFile, "*****************************\r\n");
 
 					}
 					if (pArguments) delete[] pArguments;
@@ -2516,8 +2414,7 @@ static int TestMethods(IDispatch *pIDispatch, DWORD Level)
 
 	if (pTypeInfo->GetDocumentation(-1, &InterfaceName, 0, 0, 0) != S_OK)
 	{
-		sprintf(TempTextBuffer, "Unknown default interface:\r\n");
-		WriteText(hLogFile, TempTextBuffer);
+		WriteText(hLogFile, "Unknown default interface:\r\n");
 	}
 
 	for (UINT CurrrentFunction = 0; CurrrentFunction < pTypeAttr->cFuncs; CurrrentFunction++)
@@ -2526,10 +2423,9 @@ static int TestMethods(IDispatch *pIDispatch, DWORD Level)
 		hResult = pTypeInfo->GetFuncDesc(CurrrentFunction, &FunctionDescription);
 		if (hResult != S_OK)
 		{
-			if (hResult == E_OUTOFMEMORY) sprintf(TempTextBuffer, "GetFuncDesc Failed (E_OUTOFMEMORY)\r\n");
-			else if (hResult == E_INVALIDARG)  sprintf(TempTextBuffer, "GetFuncDesc Failed (E_INVALIDARG)\r\n");
-			else sprintf(TempTextBuffer, "GetFuncDesc Failed (0x%x)\r\n", hResult);
-			WriteText(hLogFile, TempTextBuffer);
+			if (hResult == E_OUTOFMEMORY) WriteText(hLogFile, "GetFuncDesc Failed (E_OUTOFMEMORY)\r\n");
+			else if (hResult == E_INVALIDARG)  WriteText(hLogFile, "GetFuncDesc Failed (E_INVALIDARG)\r\n");
+			else WriteText(hLogFile, "GetFuncDesc Failed (0x%x)\r\n", hResult);
 			continue;
 		}
 
@@ -2568,8 +2464,7 @@ static int TestMethod(IDispatch *pIDispatch, ITypeInfo *pTypeInfo, FUNCDESC* Fun
 		delete[] MethodInformation;
 		pTypeInfo->ReleaseFuncDesc(FunctionDescription);
 		::SysFreeString(LargeTestString);
-		sprintf(TempTextBuffer, "Error In Name\r\n");
-		WriteText(hLogFile, TempTextBuffer);
+		WriteText(hLogFile, "Error In Name\r\n");
 		return(GET_DOCUMENTATION_FAILED);
 	}
 	tempstr = TypeDescriptionToString(&FunctionDescription->elemdescFunc.tdesc, pTypeInfo);
@@ -2666,8 +2561,7 @@ static int TestMethod(IDispatch *pIDispatch, ITypeInfo *pTypeInfo, FUNCDESC* Fun
 	Result.boolVal = VARIANT_FALSE;
 	UINT uArgErr;
 
-	sprintf(TempTextBuffer, "Invoking Method                 - %ws::%s\r\n", InterfaceName, MethodInformation);
-	WriteText(hLogFile, TempTextBuffer);
+	WriteText(hLogFile, "Invoking Method                 - %ws::%s\r\n", InterfaceName, MethodInformation);
 
 	try
 	{
@@ -2677,53 +2571,36 @@ static int TestMethod(IDispatch *pIDispatch, ITypeInfo *pTypeInfo, FUNCDESC* Fun
 	catch (const access_violation& e)
 	{
 		COM_Object_Exeception_Occurred = true;
-		sprintf(TempTextBuffer, "*****************************\r\n");
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "***   Access Violation    ***\r\n");
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "*****************************\r\n");
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "Invoked Method - %ws::%s\r\n", InterfaceName, MethodInformation);
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "%s at 0x%p :Bad %s on 0x%p\r\n",
+		WriteText(hLogFile, "*****************************\r\n");
+		WriteText(hLogFile, "***   Access Violation    ***\r\n");
+		WriteText(hLogFile, "*****************************\r\n");
+		WriteText(hLogFile, "Invoked Method - %ws::%s\r\n", InterfaceName, MethodInformation);
+		WriteText(hLogFile, "%s at 0x%p :Bad %s on 0x%p\r\n",
 			e.what(), e.where(), e.isWrite() ? "write" : "read", e.badAddress());
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "*****************************\r\n");
-		WriteText(hLogFile, TempTextBuffer);
+		WriteText(hLogFile, "*****************************\r\n");
 
 	}
 	catch (const win32_exception& e)
 	{
 		COM_Object_Exeception_Occurred = true;
-		sprintf(TempTextBuffer, "*****************************\r\n");
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "***   Win32 Exception     ***\r\n");
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "*****************************\r\n");
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "Invoked Method - %ws::%s\r\n", InterfaceName, MethodInformation);
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "%s (code %x) at 0x%p\r\n",
+		WriteText(hLogFile, "*****************************\r\n");
+		WriteText(hLogFile, "***   Win32 Exception     ***\r\n");
+		WriteText(hLogFile, "*****************************\r\n");
+		WriteText(hLogFile, "Invoked Method - %ws::%s\r\n", InterfaceName, MethodInformation);
+		WriteText(hLogFile, "%s (code %x) at 0x%p\r\n",
 			e.what(), e.code(), e.where());
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "*****************************\r\n");
-		WriteText(hLogFile, TempTextBuffer);
+		WriteText(hLogFile, "*****************************\r\n");
 
 	}
 
 	if (Result.vt == VT_DISPATCH && !Result.pdispVal)
 	{
 #if LOGINFO
-		sprintf(TempTextBuffer, "*****************************\r\n");
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "***      No Results       ***\r\n");
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "*****************************\r\n");
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "Invoked Method - %ws::%s\r\n", InterfaceName, MethodInformation);
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "*****************************\r\n");
-		WriteText(hLogFile, TempTextBuffer);
+		WriteText(hLogFile, "*****************************\r\n");
+		WriteText(hLogFile, "***      No Results       ***\r\n");
+		WriteText(hLogFile, "*****************************\r\n");
+		WriteText(hLogFile, "Invoked Method - %ws::%s\r\n", InterfaceName, MethodInformation);
+		WriteText(hLogFile, "*****************************\r\n");
 
 #endif
 	}
@@ -2736,50 +2613,36 @@ static int TestMethod(IDispatch *pIDispatch, ITypeInfo *pTypeInfo, FUNCDESC* Fun
 			zero.QuadPart = 0;
 			if (!SetFilePointerEx(hLogFile, zero, &CurrentPos, FILE_CURRENT))
 			{
-				sprintf(TempTextBuffer, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
-				WriteText(hLogFile, TempTextBuffer);
-				sprintf(TempTextBuffer, "Set File Pointer 1 Failed\r\n");
-				WriteText(hLogFile, TempTextBuffer);
-				sprintf(TempTextBuffer, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
-				WriteText(hLogFile, TempTextBuffer);
+				WriteText(hLogFile, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
+				WriteText(hLogFile, "Set File Pointer 1 Failed\r\n");
+				WriteText(hLogFile, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
 			}
-			sprintf(TempTextBuffer, "Recurse from interface %ws\r\n", InterfaceName);
-			WriteText(hLogFile, TempTextBuffer);
+			WriteText(hLogFile, "Recurse from interface %ws\r\n", InterfaceName);
 			if (!SetFilePointerEx(hLogFile, zero, &Before, FILE_CURRENT))
 			{
-				sprintf(TempTextBuffer, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
-				WriteText(hLogFile, TempTextBuffer);
-				sprintf(TempTextBuffer, "Set File Pointer 2 Failed\r\n");
-				WriteText(hLogFile, TempTextBuffer);
-				sprintf(TempTextBuffer, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
-				WriteText(hLogFile, TempTextBuffer);
+				WriteText(hLogFile, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
+				WriteText(hLogFile, "Set File Pointer 2 Failed\r\n");
+				WriteText(hLogFile, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
 			}
 			Test_Dispatch_Interface(Result.pdispVal, Level + 1);
 			if (!SetFilePointerEx(hLogFile, zero, &After, FILE_CURRENT))
 			{
-				sprintf(TempTextBuffer, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
-				WriteText(hLogFile, TempTextBuffer);
-				sprintf(TempTextBuffer, "Set File Pointer 3 Failed\r\n");
-				WriteText(hLogFile, TempTextBuffer);
-				sprintf(TempTextBuffer, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
-				WriteText(hLogFile, TempTextBuffer);
+				WriteText(hLogFile, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
+				WriteText(hLogFile, "Set File Pointer 3 Failed\r\n");
+				WriteText(hLogFile, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
 			}
 			if (Before.QuadPart == After.QuadPart)
 			{
 				if (!SetFilePointerEx(hLogFile, CurrentPos, NULL, FILE_BEGIN))
 				{
-					sprintf(TempTextBuffer, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
-					WriteText(hLogFile, TempTextBuffer);
-					sprintf(TempTextBuffer, "Set File Pointer 4 Failed\r\n");
-					WriteText(hLogFile, TempTextBuffer);
-					sprintf(TempTextBuffer, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
-					WriteText(hLogFile, TempTextBuffer);
+					WriteText(hLogFile, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
+					WriteText(hLogFile, "Set File Pointer 4 Failed\r\n");
+					WriteText(hLogFile, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
 				}
 			}
 			else
 			{
-				sprintf(TempTextBuffer, "Recurse return %ws\r\n", InterfaceName);
-				WriteText(hLogFile, TempTextBuffer);
+				WriteText(hLogFile, "Recurse return %ws\r\n", InterfaceName);
 			}
 		}
 	}
@@ -2791,37 +2654,25 @@ static int TestMethod(IDispatch *pIDispatch, ITypeInfo *pTypeInfo, FUNCDESC* Fun
 	catch (const access_violation& e)
 	{
 #if LOG_CRASH_ON_FREE
-		sprintf(TempTextBuffer, "*****************************\r\n");
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "***   Access Violation    ***\r\n");
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "*****************************\r\n");
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "Invoked - VariantClear 2\r\n");
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "%s at 0x%p :Bad %s on 0x%p\r\n",
+		WriteText(hLogFile, "*****************************\r\n");
+		WriteText(hLogFile, "***   Access Violation    ***\r\n");
+		WriteText(hLogFile, "*****************************\r\n");
+		WriteText(hLogFile, "Invoked - VariantClear 2\r\n");
+		WriteText(hLogFile, "%s at 0x%p :Bad %s on 0x%p\r\n",
 			e.what(), e.where(), e.isWrite() ? "write" : "read", e.where());
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "*****************************\r\n");
-		WriteText(hLogFile, TempTextBuffer);
+		WriteText(hLogFile, "*****************************\r\n");
 #endif
 	}
 	catch (const win32_exception& e)
 	{
 #if LOG_CRASH_ON_FREE
-		sprintf(TempTextBuffer, "*****************************\r\n");
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "***   Win32 Exception     ***\r\n");
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "*****************************\r\n");
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "Invoked - VariantClear 2\r\n");
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "%s (code %x) at 0x%p\r\n",
+		WriteText(hLogFile, "*****************************\r\n");
+		WriteText(hLogFile, "***   Win32 Exception     ***\r\n");
+		WriteText(hLogFile, "*****************************\r\n");
+		WriteText(hLogFile, "Invoked - VariantClear 2\r\n");
+		WriteText(hLogFile, "%s (code %x) at 0x%p\r\n",
 			e.what(), e.code(), e.where());
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "*****************************\r\n");
-		WriteText(hLogFile, TempTextBuffer);
+		WriteText(hLogFile, "*****************************\r\n");
 #endif
 	}
 
@@ -2908,45 +2759,38 @@ static DWORD WINAPI  DebugProcessThread(LPVOID arg)
 
 			if (!DebugEvent.u.Exception.dwFirstChance)
 			{
-				sprintf(TempTextBuffer, "*****************************\r\n");
-				WriteText(hLogFile, TempTextBuffer);
-				sprintf(TempTextBuffer, "*** IE Exception          ***\r\n");
-				WriteText(hLogFile, TempTextBuffer);
-				sprintf(TempTextBuffer, "*****************************\r\n");
-				WriteText(hLogFile, TempTextBuffer);
+				WriteText(hLogFile, "*****************************\r\n");
+				WriteText(hLogFile, "*** IE Exception          ***\r\n");
+				WriteText(hLogFile, "*****************************\r\n");
 				if (DebugEvent.u.Exception.ExceptionRecord.NumberParameters == 2)
 				{
 					if (DebugEvent.u.Exception.ExceptionRecord.ExceptionInformation[0] == 1)
 					{
 						// write error
-						sprintf(TempTextBuffer, "%s(0x%08x): instruction address: 0x%p, invalid write to 0x%08x\r\n",
+						WriteText(hLogFile, "%s(0x%08x): instruction address: 0x%p, invalid write to 0x%08x\r\n",
 							GetExceptionName(DebugEvent.u.Exception.ExceptionRecord.ExceptionCode),
 							DebugEvent.u.Exception.ExceptionRecord.ExceptionCode,
 							DebugEvent.u.Exception.ExceptionRecord.ExceptionAddress,
 							DebugEvent.u.Exception.ExceptionRecord.ExceptionInformation[1]);
-						WriteText(hLogFile, TempTextBuffer);
 					}
 					else
 					{
 						// read error
-						sprintf(TempTextBuffer, "%s(0x%08x): instruction address: 0x%p, invalid read from 0x%08x\r\n",
+						WriteText(hLogFile, "%s(0x%08x): instruction address: 0x%p, invalid read from 0x%08x\r\n",
 							GetExceptionName(DebugEvent.u.Exception.ExceptionRecord.ExceptionCode),
 							DebugEvent.u.Exception.ExceptionRecord.ExceptionCode,
 							DebugEvent.u.Exception.ExceptionRecord.ExceptionAddress,
 							DebugEvent.u.Exception.ExceptionRecord.ExceptionInformation[1]);
-						WriteText(hLogFile, TempTextBuffer);
 					}
 				}
 				else
 				{
-					sprintf(TempTextBuffer, "%s(0x%08x): instruction address: 0x%p\r\n",
+					WriteText(hLogFile, "%s(0x%08x): instruction address: 0x%p\r\n",
 						GetExceptionName(DebugEvent.u.Exception.ExceptionRecord.ExceptionCode),
 						DebugEvent.u.Exception.ExceptionRecord.ExceptionCode,
 						DebugEvent.u.Exception.ExceptionRecord.ExceptionAddress);
-					WriteText(hLogFile, TempTextBuffer);
 				}
-				sprintf(TempTextBuffer, "*****************************\r\n");
-				WriteText(hLogFile, TempTextBuffer);
+				WriteText(hLogFile, "*****************************\r\n");
 				MonitorDetectedIECrash = TRUE;
 
 			}
@@ -3090,17 +2934,12 @@ static int IELoadUrl(char * Url)
 	catch (const access_violation& e)
 	{
 		COM_Object_Exeception_Occurred = true;
-		sprintf(TempTextBuffer, "*****************************\r\n");
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "*** IE Access Violation   ***\r\n");
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "*****************************\r\n");
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "%s at 0x%p :Bad %s on 0x%p\r\n",
+		WriteText(hLogFile, "*****************************\r\n");
+		WriteText(hLogFile, "*** IE Access Violation   ***\r\n");
+		WriteText(hLogFile, "*****************************\r\n");
+		WriteText(hLogFile, "%s at 0x%p :Bad %s on 0x%p\r\n",
 			e.what(), e.where(), e.isWrite() ? "write" : "read", e.badAddress());
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "*****************************\r\n");
-		WriteText(hLogFile, TempTextBuffer);
+		WriteText(hLogFile, "*****************************\r\n");
 		if (bstrURL) SysFreeString(bstrURL);
 		IeBrowserInterface->Quit();
 		IeBrowserInterface->Release();
@@ -3110,17 +2949,12 @@ static int IELoadUrl(char * Url)
 	catch (const win32_exception& e)
 	{
 		COM_Object_Exeception_Occurred = true;
-		sprintf(TempTextBuffer, "*****************************\r\n");
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "*** IE Win32 Exception    ***\r\n");
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "*****************************\r\n");
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "%s (code %x) at 0x%p\r\n",
+		WriteText(hLogFile, "*****************************\r\n");
+		WriteText(hLogFile, "*** IE Win32 Exception    ***\r\n");
+		WriteText(hLogFile, "*****************************\r\n");
+		WriteText(hLogFile, "%s (code %x) at 0x%p\r\n",
 			e.what(), e.code(), e.where());
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "*****************************\r\n");
-		WriteText(hLogFile, TempTextBuffer);
+		WriteText(hLogFile, "*****************************\r\n");
 		if (bstrURL) SysFreeString(bstrURL);
 		IeBrowserInterface->Quit();
 		IeBrowserInterface->Release();
@@ -3190,17 +3024,12 @@ static int IELoadUrlPARAMS(char * Url, DWORD Timeout)
 	catch (const access_violation& e)
 	{
 		COM_Object_Exeception_Occurred = true;
-		sprintf(TempTextBuffer, "*****************************\r\n");
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "*** IE Access Violation   ***\r\n");
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "*****************************\r\n");
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "%s at 0x%p :Bad %s on 0x%p\r\n",
+		WriteText(hLogFile, "*****************************\r\n");
+		WriteText(hLogFile, "*** IE Access Violation   ***\r\n");
+		WriteText(hLogFile, "*****************************\r\n");
+		WriteText(hLogFile, "%s at 0x%p :Bad %s on 0x%p\r\n",
 			e.what(), e.where(), e.isWrite() ? "write" : "read", e.badAddress());
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "*****************************\r\n");
-		WriteText(hLogFile, TempTextBuffer);
+		WriteText(hLogFile, "*****************************\r\n");
 		if (bstrURL) SysFreeString(bstrURL);
 		IeBrowserInterface->Quit();
 		IeBrowserInterface->Release();
@@ -3210,17 +3039,12 @@ static int IELoadUrlPARAMS(char * Url, DWORD Timeout)
 	catch (const win32_exception& e)
 	{
 		COM_Object_Exeception_Occurred = true;
-		sprintf(TempTextBuffer, "*****************************\r\n");
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "*** IE Win32 Exception    ***\r\n");
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "*****************************\r\n");
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "%s (code %x) at 0x%p\r\n",
+		WriteText(hLogFile, "*****************************\r\n");
+		WriteText(hLogFile, "*** IE Win32 Exception    ***\r\n");
+		WriteText(hLogFile, "*****************************\r\n");
+		WriteText(hLogFile, "%s (code %x) at 0x%p\r\n",
 			e.what(), e.code(), e.where());
-		WriteText(hLogFile, TempTextBuffer);
-		sprintf(TempTextBuffer, "*****************************\r\n");
-		WriteText(hLogFile, TempTextBuffer);
+		WriteText(hLogFile, "*****************************\r\n");
 		if (bstrURL) SysFreeString(bstrURL);
 		IeBrowserInterface->Quit();
 		IeBrowserInterface->Release();
@@ -3244,7 +3068,6 @@ static int Create_HTML_Test_File(char *FileName, char *CLSID)
 {
 	char   ADS_FileName[MAX_PATH];
 	HANDLE hFile, hStream;
-	char   TempBuff[1024];
 
 
 	if (FileName == NULL) return(-1);
@@ -3275,14 +3098,13 @@ static int Create_HTML_Test_File(char *FileName, char *CLSID)
 		DeleteFile(FileName);
 		return(-1);
 	}
-	if (WriteText(hFile, "<!--\r\n"))
+	if (!WriteText(hFile, "<!--\r\n"))
 	{
 		CloseHandle(hFile);
 		CloseHandle(hStream);
 		return(-1);
 	}
-	sprintf(TempBuff, "COM Object - %s %s\r\n", CLSID_String, CLSID_Description);
-	if (WriteText(hFile, TempBuff))
+	if (!WriteText(hFile, "COM Object - %s %s\r\n", CLSID_String, CLSID_Description))
 	{
 		CloseHandle(hFile);
 		CloseHandle(hStream);
@@ -3291,14 +3113,13 @@ static int Create_HTML_Test_File(char *FileName, char *CLSID)
 
 	if (HaveCOM_Filename) PrintFileInfo(hFile, COM_FileName);
 
-	if (WriteText(hFile, "-->\r\n"))
+	if (!WriteText(hFile, "-->\r\n"))
 	{
 		CloseHandle(hFile);
 		CloseHandle(hStream);
 		return(-1);
 	}
-	sprintf(TempBuff, "<object id=TestObj classid=\"CLSID:%s\" style=\"width:100%%;height:350\"></object>", CLSID);
-	if (WriteText(hFile, TempBuff))
+	if (!WriteText(hFile, "<object id=TestObj classid=\"CLSID:%s\" style=\"width:100%%;height:350\"></object>", CLSID))
 	{
 		CloseHandle(hFile);
 		CloseHandle(hStream);
@@ -3306,8 +3127,7 @@ static int Create_HTML_Test_File(char *FileName, char *CLSID)
 		return(-1);
 	}
 
-	sprintf(TempBuff, "[ZoneTransfer]\nZoneId=%d\n", ZoneID);
-	if (WriteText(hStream, TempBuff))
+	if (!WriteText(hStream, "[ZoneTransfer]\nZoneId=%d\n", ZoneID))
 	{
 		CloseHandle(hFile);
 		CloseHandle(hStream);
@@ -3328,7 +3148,6 @@ static int Generate_HTML_PARAMS_Test_File(char *FileName, char *CLSID)
 	char   ADS_FileName[MAX_PATH];
 	HANDLE hFile, hStream;
 
-	char   TempBuff[1025];
 	char   *BIG_BIG_String = NULL;
 	TStringList *pNode;
 
@@ -3377,14 +3196,13 @@ static int Generate_HTML_PARAMS_Test_File(char *FileName, char *CLSID)
 		return(-1);
 	}
 
-	if (WriteText(hFile, "<!--\r\n"))
+	if (!WriteText(hFile, "<!--\r\n"))
 	{
 		CloseHandle(hFile);
 		CloseHandle(hStream);
 		return(NULL);
 	}
-	sprintf(TempBuff, "COM Object - %s %s\r\n", CLSID_String, CLSID_Description);
-	if (WriteText(hFile, TempBuff))
+	if (!WriteText(hFile, "COM Object - %s %s\r\n", CLSID_String, CLSID_Description))
 	{
 		CloseHandle(hFile);
 		CloseHandle(hStream);
@@ -3393,15 +3211,14 @@ static int Generate_HTML_PARAMS_Test_File(char *FileName, char *CLSID)
 
 	if (HaveCOM_Filename) PrintFileInfo(hFile, COM_FileName);
 
-	if (WriteText(hFile, "-->\r\n"))
+	if (!WriteText(hFile, "-->\r\n"))
 	{
 		CloseHandle(hFile);
 		CloseHandle(hStream);
 		return(NULL);
 	}
 
-	sprintf(TempBuff, "<object id=TestObj classid=\"CLSID:%s\" style=\"width:100%%;height:350\">\r\n", CLSID);
-	if (WriteText(hFile, TempBuff))
+	if (!WriteText(hFile, "<object id=TestObj classid=\"CLSID:%s\" style=\"width:100%%;height:350\">\r\n", CLSID))
 	{
 		CloseHandle(hFile);
 		CloseHandle(hStream);
@@ -3424,9 +3241,7 @@ static int Generate_HTML_PARAMS_Test_File(char *FileName, char *CLSID)
 
 	for (pNode = StringListHead; pNode != NULL; pNode = pNode->pNext)
 	{
-		sprintf(TempBuff, "<param NAME=\"%s\" VALUE=\"", pNode->String);
-
-		if (WriteText(hFile, TempBuff))
+		if (!WriteText(hFile, "<param NAME=\"%s\" VALUE=\"", pNode->String))
 		{
 			CloseHandle(hFile);
 			CloseHandle(hStream);
@@ -3437,7 +3252,7 @@ static int Generate_HTML_PARAMS_Test_File(char *FileName, char *CLSID)
 			return(-1);
 		}
 
-		if (WriteText(hFile, BIG_BIG_String))
+		if (!WriteText(hFile, BIG_BIG_String))
 		{
 			CloseHandle(hFile);
 			CloseHandle(hStream);
@@ -3447,7 +3262,7 @@ static int Generate_HTML_PARAMS_Test_File(char *FileName, char *CLSID)
 			free(BIG_BIG_String);
 			return(-1);
 		}
-		if (WriteText(hFile, "\">\r\n"))
+		if (!WriteText(hFile, "\">\r\n"))
 		{
 			CloseHandle(hFile);
 			CloseHandle(hStream);
@@ -3458,7 +3273,7 @@ static int Generate_HTML_PARAMS_Test_File(char *FileName, char *CLSID)
 			return(-1);
 		}
 	}
-	if (WriteText(hFile, "</object>\r\n"))
+	if (!WriteText(hFile, "</object>\r\n"))
 	{
 		CloseHandle(hFile);
 		CloseHandle(hStream);
@@ -3470,8 +3285,7 @@ static int Generate_HTML_PARAMS_Test_File(char *FileName, char *CLSID)
 	}
 
 	free(BIG_BIG_String);
-	sprintf(TempBuff, "[ZoneTransfer]\nZoneId=%d\n", ZoneID);
-	if (WriteText(hStream, TempBuff))
+	if (!WriteText(hStream, "[ZoneTransfer]\nZoneId=%d\n", ZoneID))
 	{
 		CloseHandle(hFile);
 		CloseHandle(hStream);
@@ -3496,7 +3310,6 @@ static HANDLE Create_HTML_PARAMS_Test_File(char *FileName, char *CLSID)
 {
 	char   ADS_FileName[MAX_PATH];
 	HANDLE hFile, hStream;
-	char   TempBuff[1025];
 
 	if (FileName == NULL) return(NULL);
 
@@ -3527,8 +3340,7 @@ static HANDLE Create_HTML_PARAMS_Test_File(char *FileName, char *CLSID)
 		DeleteFile(FileName);
 		return(NULL);
 	}
-	sprintf(TempBuff, "[ZoneTransfer]\nZoneId=%d\n", ZoneID);
-	if (WriteText(hStream, TempBuff))
+	if (!WriteText(hStream, "[ZoneTransfer]\nZoneId=%d\n", ZoneID))
 	{
 		CloseHandle(hFile);
 		CloseHandle(hStream);
@@ -3536,14 +3348,13 @@ static HANDLE Create_HTML_PARAMS_Test_File(char *FileName, char *CLSID)
 		return(NULL);
 	}
 
-	if (WriteText(hFile, "<!--\r\n"))
+	if (!WriteText(hFile, "<!--\r\n"))
 	{
 		CloseHandle(hFile);
 		CloseHandle(hStream);
 		return(NULL);
 	}
-	sprintf(TempBuff, "COM Object - %s %s\r\n", CLSID_String, CLSID_Description);
-	if (WriteText(hFile, TempBuff))
+	if (!WriteText(hFile, "COM Object - %s %s\r\n", CLSID_String, CLSID_Description))
 	{
 		CloseHandle(hFile);
 		CloseHandle(hStream);
@@ -3552,15 +3363,14 @@ static HANDLE Create_HTML_PARAMS_Test_File(char *FileName, char *CLSID)
 
 	if (HaveCOM_Filename) PrintFileInfo(hFile, COM_FileName);
 
-	if (WriteText(hFile, "-->\r\n"))
+	if (!WriteText(hFile, "-->\r\n"))
 	{
 		CloseHandle(hFile);
 		CloseHandle(hStream);
 		return(NULL);
 	}
 
-	sprintf(TempBuff, "<object id=TestObj classid=\"CLSID:%s\" style=\"width:100%%;height:350\">\r\n", CLSID);
-	if (WriteText(hFile, TempBuff))
+	if (!WriteText(hFile, "<object id=TestObj classid=\"CLSID:%s\" style=\"width:100%%;height:350\">\r\n", CLSID))
 	{
 		CloseHandle(hFile);
 		CloseHandle(hStream);
@@ -3829,8 +3639,7 @@ static void  DeleteStringList(void)
 //	char tempTextBuffer[1024];
 //	for (pNode = StringListHead; pNode != NULL; pNode = pNode->pNext)
 //	{
-//		sprintf(tempTextBuffer, "%s\r\n", pNode->String);
-//		WriteText(hLogFile, tempTextBuffer);
+//		WriteText(hLogFile, "%s\r\n", pNode->String);
 //
 //	}
 //}
@@ -4187,7 +3996,6 @@ static int TestParamsViaBinaryScan(CLSID *clsid)
 
 static BOOL GenerateVariantText(VARIANT &var, LPCOLESTR pwszPropName, HANDLE hfile)
 {
-	char   TempBuff[1024];
 	switch (var.vt)
 	{
 	case VT_BSTR:
@@ -4209,8 +4017,7 @@ static BOOL GenerateVariantText(VARIANT &var, LPCOLESTR pwszPropName, HANDLE hfi
 	}
 
 
-	sprintf(TempBuff, "<PARAM NAME=\"%ws\" VALUE=\"", pwszPropName);
-	WriteText(TestFileHandle, TempBuff);
+	WriteText(hfile, "<PARAM NAME=\"%ws\" VALUE=\"", pwszPropName);
 
 	switch (var.vt)
 	{
@@ -4250,8 +4057,7 @@ static BOOL GenerateVariantText(VARIANT &var, LPCOLESTR pwszPropName, HANDLE hfi
 
 	}
 
-	sprintf(TempBuff, "\">\r\n");// , pwszPropName);
-	WriteText(TestFileHandle, TempBuff);
+	WriteText(hfile, "\">\r\n");// , pwszPropName);
 	return(TRUE);
 }
 
@@ -4365,44 +4171,42 @@ static DWORD ComputeInitialLoadTime(char *FileName)
 
 //void PrintVariant(VARIANT &var)
 //{
-//	char tempTextBuffer[1024];
 //	if (var.vt == VT_UI1)
 //	{
-//		sprintf(tempTextBuffer, "VT_UI1:%u\r\n", var.bVal);
+//		WriteText(hLogFile, "VT_UI1:%u\r\n", var.bVal);
 //	}
 //	else if (var.vt == VT_I2)
 //	{
-//		sprintf(tempTextBuffer, "VT_I2:%d\r\n", var.iVal);
+//		WriteText(hLogFile, "VT_I2:%d\r\n", var.iVal);
 //	}
 //	else if (var.vt == VT_I4)
 //	{
-//		sprintf(tempTextBuffer, "I4:%d\r\n", var.lVal);
+//		WriteText(hLogFile, "I4:%d\r\n", var.lVal);
 //	}
 //	else if (var.vt == VT_R4)
 //	{
-//		sprintf(tempTextBuffer, "VT_R4:%f\r\n", var.fltVal);
+//		WriteText(hLogFile, "VT_R4:%f\r\n", var.fltVal);
 //	}
 //	else if (var.vt == VT_R8)
 //	{
-//		sprintf(tempTextBuffer, "VT_R8:%lf\r\n", var.dblVal);
+//		WriteText(hLogFile, "VT_R8:%lf\r\n", var.dblVal);
 //	}
 //	else if (var.vt == VT_BOOL)
 //	{
 //		if (var.boolVal == 0)
 //		{
-//			sprintf(tempTextBuffer, "VT_BOOL:false\r\n");
+//			WriteText(hLogFile, "VT_BOOL:false\r\n");
 //		}
 //		else
 //		{
-//			sprintf(tempTextBuffer, "VT_BOOL:true\r\n");
+//			WriteText(hLogFile, "VT_BOOL:true\r\n");
 //		}
 //	}
 //	else if (var.vt == VT_BSTR)
 //	{
-//		sprintf(tempTextBuffer, "VT_BSTR:%0.10ls....{%d}\r\n", var.bstrVal, SysStringLen(var.bstrVal));
+//		WriteText(hLogFile, "VT_BSTR:%0.10ls....{%d}\r\n", var.bstrVal, SysStringLen(var.bstrVal));
 //	}
-//	else sprintf(tempTextBuffer, "[UNKNOWN]\r\n");
-//	WriteText(hLogFile, tempTextBuffer);
+//	else WriteText(hLogFile, "[UNKNOWN]\r\n");
 //}
 
 #define COM_KILL_BIT TEXT("SOFTWARE\\Microsoft\\Internet Explorer\\ActiveX Compatibility")
