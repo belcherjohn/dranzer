@@ -67,12 +67,12 @@ errno_t strdup_m(string_m *s1, const string_m s2){
   /* copy charset */
   if(s2->strtype == STRTYPE_NTBS){
     if(s2->charset.cstr)
-      (*s1)->charset.cstr = strdup(s2->charset.cstr);
+      (*s1)->charset.cstr = _strdup(s2->charset.cstr);
     else
       (*s1)->charset.cstr = NULL;
   } else {
     if(s2->charset.wstr)
-      (*s1)->charset.wstr = wcsdup(s2->charset.wstr);	
+      (*s1)->charset.wstr = _wcsdup(s2->charset.wstr);	
     else
       (*s1)->charset.wstr = NULL;
   }
@@ -139,7 +139,7 @@ errno_t strcreate_m(string_m *s, const char *cstr, const size_t maxsize, const c
   }
 
   (*s)->maxsize = maxsize;
-  if (charset) (*s)->charset.cstr = strdup(charset);
+  if (charset) (*s)->charset.cstr = _strdup(charset);
   else (*s)->charset.cstr = NULL;
        
   return 0;

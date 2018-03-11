@@ -183,7 +183,7 @@ BOOL WindowMonitorStop(void)
 /// WindowMonitorThreadProc(LPVOID arg);                                                    //            
 ///                                                                                   //
 ////////////////////////////////////////////////////////////////////////////////////////
-static DWORD WINAPI WindowMonitorThreadProc(LPVOID arg) 
+static DWORD WINAPI WindowMonitorThreadProc(LPVOID /*arg*/) 
 {
  MSG         msg ; 
  _tsetlocale(LC_CTYPE, _T(""));
@@ -293,7 +293,7 @@ static void  FreeWindow(THiddenWindow *HiddenWindow)
 /// BOOL CALLBACK EnumWindowsProc(HWND hwnd,LPARAM lParam)                            //            
 ///                                                                                   //
 ////////////////////////////////////////////////////////////////////////////////////////
-static BOOL CALLBACK EnumWindowsProc(HWND hwnd,LPARAM lParam)
+static BOOL CALLBACK EnumWindowsProc(HWND hwnd,LPARAM /*lParam*/)
 {
  return(AddWindow(hwnd));
 }
@@ -548,7 +548,7 @@ static BOOL CheckButtons(TButtonList *ButtonList)
 /// static BOOL CALLBACK CheckUnhookableCallback(HWND hwnd, LPARAM lParam)            //            
 ///                                                                                   //
 ////////////////////////////////////////////////////////////////////////////////////////
-static BOOL CALLBACK CheckUnhookableCallback(HWND hwnd, LPARAM lParam)
+static BOOL CALLBACK CheckUnhookableCallback(HWND hwnd, LPARAM /*lParam*/)
 {
   TButtonList ButtonList;
   ButtonList.NumButtons=0;

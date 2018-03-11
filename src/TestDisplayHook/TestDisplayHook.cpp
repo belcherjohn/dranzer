@@ -11,7 +11,7 @@ static BOOL CtrlHandler(DWORD fdwCtrlType);
 
 static HANDLE MainThreadHandle;
 
-int _tmain(int argc, _TCHAR* argv[])
+int _tmain(int /*argc*/, _TCHAR* /*argv*/[])
 {
  DuplicateHandle(GetCurrentProcess(), GetCurrentThread(),GetCurrentProcess(),
                 &MainThreadHandle, THREAD_ALL_ACCESS, FALSE, 0);
@@ -22,7 +22,7 @@ int _tmain(int argc, _TCHAR* argv[])
  return 0;
 }
 //---------------------------------------------------------------------------
-static BOOL CtrlHandler(DWORD fdwCtrlType)
+static BOOL CtrlHandler(DWORD /*fdwCtrlType*/)
 {
  ResumeThread(MainThreadHandle);
  return(TRUE);

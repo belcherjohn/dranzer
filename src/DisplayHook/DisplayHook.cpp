@@ -18,7 +18,7 @@ static  LRESULT CALLBACK HookCallBack(int nCode, WPARAM wParam, LPARAM lParam);
 
 BOOL APIENTRY DllMain( HANDLE hModule, 
                        DWORD  ul_reason_for_call, 
-                       LPVOID lpReserved
+                       LPVOID /*lpReserved*/
 					 )
 {
 	

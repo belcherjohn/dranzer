@@ -1,0 +1,6 @@
+src/.temp/
+src/.vs/
+src/Debug/
+src/Release/
+src/ipch/
+*.user

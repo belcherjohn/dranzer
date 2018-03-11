@@ -186,13 +186,13 @@ wsetcharset_m(string_m s, const wchar_t *charset){
   }
 
   if(!s->size){
-    s->charset.wstr = wcsdup(charset);
+    s->charset.wstr = _wcsdup(charset);
     return 0;
   }
 
   if((rv = strlen_m(s, &size)) != 0) ERROR(EINVAL);
 
-  s->charset.wstr = wcsdup(charset);
+  s->charset.wstr = _wcsdup(charset);
 
   if(wcsspn(s->str.wstr, charset) < size){
     ErrorHandler("setcharset_m: Charset Invalidates String", charset, EINVAL);
@@ -226,13 +226,13 @@ csetcharset_m(string_m s, const char *charset){
   }
 
   if(!s->size){
-    s->charset.cstr = strdup(charset);
+    s->charset.cstr = _strdup(charset);
     return 0;
   }
 
   if((rv = strlen_m(s, &size)) != 0) ERROR(EINVAL);
 
-  s->charset.cstr = strdup(charset);
+  s->charset.cstr = _strdup(charset);
 
   if(strspn(s->str.cstr, charset) != size){
     ErrorHandler("setcharset_m: Charset Invalidates String", charset, EINVAL);
