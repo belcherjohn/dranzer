@@ -1,576 +1,227 @@
 // TestAndReport.cpp : Defines the entry point for the console application.
 //
-#define _WIN32_WINNT 0x0400
 #include "stdafx.h"
-#include <windows.h>
-#include <Winuser.h>
-#include <comdef.h>
-#include <objbase.h>
-#include <mshtmhst.h>
-#include <stdio.h>
-#include <tchar.h>
-#include <objsafe.h>
-#include <io.h>    // For _access and _waccess
+
+#include "on_exit_scope.h"
 #include "win32_exception.h"
 #include "TestErrors.h"
-#include <Shlwapi.h>
-#include <DispEx.h>
-#include <exdisp.h>
-#include <varargs.h>
+
+#include <comdef.h>
+#pragma comment(lib, "comsuppw.lib")
+#include <math.h>
 #include <sal.h>
 
-#include "string_m.h"
-#include "KillApplication.h"
+#include <exception>
+#include <iostream>
+#include <memory>
+#include <sstream>
+#include <string>
+#include <utility>
+#include <vector>
 
-#define COM_KILL_BIT TEXT("SOFTWARE\\Microsoft\\Internet Explorer\\ActiveX Compatibility")
-
-#define PARAMS_LOAD_TIMEOUT_MIN              6000
-#define PARAMS_LOAD_MBYTES_PER_SEC          20000
-
-#define METHOD_AND_PROP_STRING_CHARACTER       'x'
-#define METHOD_AND_PROP_STRING_LENGTH    (1024*10)
-
-#define PARAM_STRING_CHARACTER                 'x'
-#define PARAM_STRING_LENGTH              (1024*10)
-
-#define PROPERTY_BAG_STRING_CHARACTER          'x'
-#define PROPERTY_BAG_STRING_LENGTH       (1024*10)
-
-#define MAXRECURSE 2
-#define LOGINFO 1
-#define MIN_STRING_LENGTH 4
 #define LOG_CRASH_ON_FREE 1
-#define TEST_ENGINE_VERSION	"$Rev: 101 $"
 
-
-#define MAX_NUMBER_OF_SECTIONS         20
-
-typedef struct _StringList
+void PrintUsage(PSTR argv[])
 {
-	char               * String;
-	struct _StringList * pNext;
-	struct _StringList * pPrev;
-} TStringList;
+	std::cerr
+		<< "Usage: " << argv[0]
+		<< " -c <CLSID> (-t | -g) [-o <outputfile>] \n"
+		"Options:\n"
+		"        -c <CLSID>        - CLSID. Ex. "
+		"'{E37D0378-3E36-403A-9698-B7ECFD77770B}'\n"
+		"        -t                - Test COM object.\n"
+		"        -g                - Generate interface for COM object.\n"
+		"        -o <outputfile>   - Log all output to the given file.\n"
+		"        -h                - Display this message.\n";
+}
 
-typedef struct
+enum class ExecutionMode
 {
-	DWORD Offset;
-	DWORD Length;
-} TSectionsToCheck;
-
-typedef enum
-{
-	NONE,
-	TEST_CONTROL,
-	GEN_INTERFACE,
-	IE_LOAD,
-	PARAMS_IN_IE_PROPBAG,
-	PARAMS_IN_IE_BINARY_SCAN,
-	PRINT_COM_OBJECT_INFORMATION
-} TExecutionMode;
-
-class MyIPropertyBag : public IPropertyBag
-{
-public:
-	// IPropertyBag interface
-	STDMETHODIMP Read(LPCOLESTR pwszPropName, VARIANT *pVar, IErrorLog *pErrorLog);
-	STDMETHODIMP Write(LPCOLESTR pwszPropName, VARIANT *pVar);
-	STDMETHODIMP_(ULONG) AddRef() { return 2; }
-	STDMETHODIMP_(ULONG) Release() { return 1; }
-	STDMETHODIMP QueryInterface(REFIID /*riid*/, void ** /*ppv*/) { return NOERROR; }
+	None,
+	TestControl,
+	GenerateInterface,
 };
-static int      GetKillBit(WCHAR *CLSID_Str_Wide);
-static inline   BOOL FileExists(LPCTSTR lpszFile) { return _taccess(lpszFile, 0) == 0; }
-static char   * FindFile(char *FileName);
-static string_m CustomTypeToString(HREFTYPE refType, ITypeInfo* pTypeInfo);
-static string_m TypeDescriptionToString(TYPEDESC* typeDesc, ITypeInfo* pTypeInfo);
-static int      PrintComObjectInformation(CLSID *clsid);
-static int      TestCOM_Object(CLSID *clsid);
-static int      Test_Dispatch_Interface(IDispatch *pIDispatch, DWORD Level);
-static int      Test_DispatchEx_Interface(IDispatchEx *pIDispatchEx, DWORD Level);
-static int      TestMethods(IDispatch *pIDispatch, DWORD Level);
-static int      TestMethod(IDispatch *pIDispatch, ITypeInfo *pTypeInfo, FUNCDESC* FunctionDescription, BSTR InterfaceName, DWORD Level);
-static int      TestProperites(IDispatch *pIDispatch, DWORD Level);
-static int      Get_CLSID_From_String(TCHAR *pCLSID_String, CLSID *clsid);
-static int      Get_CLSID_Description(TCHAR *pCLSID_String, TCHAR *Description, DWORD DescriptionLength);
-static int      SetArgument(VARIANTARG *arg, BSTR BigString);
-static int      WriteText(HANDLE hFile, _In_z_ _Printf_format_string_ const char *Format, ...);
-static void     ParseArguments(int argc, _TCHAR* argv[]);
-static void     PrintUsage(_TCHAR* argv[]);
-static int      PrintInterfaceInfo(IDispatch *pIDispatch);
-static int      IELoadUrl(char * Url);
-static int      Get_COM_FileName(TCHAR *pCLSID_String, TCHAR *FileName, DWORD FileNameLength);
-static int      PrintFileInfo(HANDLE handle, TCHAR *FileName);
-static const char *   GetArgumentStringEquivalent(USHORT *arg);
-static int      Generate_HTML_PARAMS_Test_File(char *FileName, char *CLSID);
-static int      IELoadUrlPARAMS(char * Url, DWORD Timeout);
-//static void     PrintVariant(VARIANT &var);
-static HANDLE   Create_HTML_PARAMS_Test_File(char *FileName, char *CLSID);
-static int      TestParamsViaBinaryScan(CLSID *clsid);
-static int      GetIeVersion(DWORD * Major, DWORD * Minor, DWORD *BuildNo, DWORD *SubBuildNo);
-static int      DeQuoteString(char * String);
 
-static DWORD WINAPI    DebugProcessThread(LPVOID arg);
-static int             Create_HTML_Test_File(char *FileName, char *CLSID);
-static void            DeleteTempFile(char *FileName);
-static void            StringsASCII(BYTE	 *Memory, DWORD Size);
-static void            StringsUnicode(BYTE	 *Memory, DWORD Size);
-static int             OpenFileName(char* FileName);
-static TStringList *   InsertString(char *String);
-static TStringList *   FindString(char *String);
-static void            RemoveString(TStringList *pNode);
-static void            DeleteStringList(void);
-static int             TestParamsPropertyBag(CLSID *clsid);
-//static void            PrintStringList(void);
-static BOOL            GenerateVariantText(VARIANT &var, LPCOLESTR pwszPropName, HANDLE hfile);
-static BOOL            CALLBACK EnumWindowsCallback(HWND hwnd, LPARAM lParam);
-static void            ActivateControlInIE(void);
-static BOOL CALLBACK   EnumChildWindowCallback(HWND hwnd, LPARAM lParam);
+// Forward declarations
+std::wstring Widen(PCSTR pStr, int cbStr = -1);
+std::wstring Widen(const std::string &str);
+std::string Narrow(PCWSTR pStr, int cchStr = -1);
+std::string Narrow(const std::wstring &str);
+std::string Format(_Printf_format_string_ PCSTR Format, ...);
+void LogInfo(_Printf_format_string_ PCSTR Format, ...);
+void LogError(_Printf_format_string_ PCSTR Format, ...);
 
-static DWORD           ComputeInitialLoadTime(char *FileName);
-//static void            dumphex(unsigned char *dptr, int size);
+void ParseArguments(int argc, PSTR argv[]);
+int TestDispatchInterface(_In_ IDispatch *pIDispatch, bool PrintOnly,
+	DWORD Level = 0);
 
-static BYTE	             *ControlLoadedInMemory = NULL;
-static DWORD              MemoryNumBytes = 0;
-static TSectionsToCheck   SectionsToCheck[MAX_NUMBER_OF_SECTIONS];
-static DWORD              NumberOfSectionsToCheck = 0;
-static TStringList       *StringListHead = NULL;
-static TStringList       *StringListTail = NULL;
+// Global variables
+static ExecutionMode gExecutionMode = ExecutionMode::None;
+static std::string gCLSIDToTest;
+static std::string gLogFileName;
+static HANDLE gLogFileHandle = nullptr;
+constexpr auto kMaxRecurse = 2;
+__declspec(thread) const win32_exception::Installer win32ExceptionHandler;
 
-static char          * GetExceptionName(DWORD ExceptionCode);
-static TCHAR           COM_FileName[MAX_PATH] = { 0 };
-static TExecutionMode  ExecutionMode = NONE;
-static HANDLE          hLogFile = NULL;
-static bool            COM_Object_Exeception_Occurred = false;
-static char          * CLSID_String = NULL;
-static char          * OutputFileName = NULL;
-static HANDLE          DebugProcessThreadHandle;
-static volatile BOOL   KillDebugMonitor = false;
-static volatile BOOL   MonitorDetectedIECrash = false;
-static BOOL            HaveCOM_Filename = false;
-static char            lpPathBuffer[MAX_PATH - 14 + 1];
-static char *          LargePropertyBagTestString = NULL;
-static HANDLE          TestFileHandle = NULL;
-static BOOL            HaveParamsToTest = false;
-static TCHAR           CLSID_Description[1024] = { 0 };
-static DWORD           ZoneID;
-static char            PropAndMethodDispString[256];
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// int _tmain()                                                                      //            
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-int _tmain(int argc, _TCHAR* argv[])
+int main(int argc, PSTR argv[])
 {
-	CLSID clsid;
-	int   RetVal = 0;
-	DWORD RetryCount = 0;
-	DWORD dwRetVal;
-	win32_exception::install_handler();
-	sprintf(PropAndMethodDispString, "<%c%c%c%c.....{%d}>", METHOD_AND_PROP_STRING_CHARACTER,
-		METHOD_AND_PROP_STRING_CHARACTER,
-		METHOD_AND_PROP_STRING_CHARACTER,
-		METHOD_AND_PROP_STRING_CHARACTER,
-		METHOD_AND_PROP_STRING_LENGTH);
-	// Get the temp path.
-	dwRetVal = GetTempPath(sizeof(lpPathBuffer),     // length of the buffer
-		lpPathBuffer);      // buffer for path 
-	if (dwRetVal == 0)
-	{
-		printf("GetTempPath failed with error %d.\n", GetLastError());
-		return (-1);
-	}
-	else if (dwRetVal > sizeof(lpPathBuffer))
-	{
-		printf("GetTempPath buffer too small\n");
-		return (-1);
-	}
 	ParseArguments(argc, argv);
 
-	RetVal = Get_CLSID_From_String(CLSID_String, &clsid);
-	if (RetVal != SUCCESS)
+	if (!gLogFileName.empty())
 	{
-		printf("Get_CLSID_From_String Failed\n");
-		return(RetVal);
-	}
+		// Open log...
+		for (auto RetryCount = 0; RetryCount < 5; ++RetryCount)
+		{
+			if (RetryCount > 0)
+				::Sleep(2000);
 
-	RetVal = Get_CLSID_Description(CLSID_String, CLSID_Description, sizeof(CLSID_Description));
-	if (RetVal != SUCCESS)
+			gLogFileHandle = ::CreateFileA(gLogFileName.c_str(),  // file to create
+				GENERIC_WRITE,         // open for writing
+				0,                     // do not share
+				nullptr,               // default security
+				CREATE_ALWAYS,         //
+				FILE_ATTRIBUTE_NORMAL, // normal file
+				nullptr);              // no attr. template
+		}
+		if (!gLogFileHandle)
+		{
+			LogError("Could not open output file: Error=%u.", ::GetLastError());
+			return CANT_CREATE_TEST_RESULTS_FILE;
+		}
+	}
+	ON_EXIT_SCOPE(if (gLogFileHandle)::CloseHandle(gLogFileHandle));
+
+	// Convert gCLSIDToTest to a CLSID...
+	CLSID clsid;
+	HRESULT hr;
+	if (SUCCEEDED(hr = ::CLSIDFromString(Widen(gCLSIDToTest).c_str(), &clsid)))
 	{
-		printf("Get_CLSID_Description Failed\n");
-		return(RetVal);
-	}
+		// Convert clsid to a CLSID just in case gCLSIDToTest is a ProgID.
+		// This should never fail...
+		LPOLESTR olesz = nullptr;
+		if (FAILED(hr = ::StringFromCLSID(clsid, &olesz)))
+		{
+			LogError("StringFromCLSID() failed: %s", _com_error(hr).ErrorMessage());
+			return CLSID_FROM_STRING_FAILED;
+		}
+		gCLSIDToTest = Narrow(olesz);
+		::CoTaskMemFree(olesz);
 
-	if (Get_COM_FileName(CLSID_String, COM_FileName, sizeof(COM_FileName)) == SUCCESS) HaveCOM_Filename = true;
-	if (OutputFileName == NULL) hLogFile = GetStdHandle(STD_OUTPUT_HANDLE);
+	}
 	else
 	{
-		while (1)
-		{
-			hLogFile = CreateFile(OutputFileName,       // file to create
-				GENERIC_WRITE,          // open for writing
-				0,                      // do not share
-				NULL,                   // default security
-				CREATE_ALWAYS,          // 
-				FILE_ATTRIBUTE_NORMAL,  // normal file
-				NULL);                  // no attr. template
-
-			if (hLogFile == INVALID_HANDLE_VALUE)
-			{
-				if (RetryCount < 5)
-				{
-					RetryCount++;
-					Sleep(2000);
-					continue;
-				}
-				else
-				{
-					printf("Could not open output file\n");
-					return (CANT_CREATE_TEST_RESULTS_FILE);
-				}
-			}
-			else break;
-		}
-	}
-	CoInitialize(NULL);
-	WriteText(hLogFile, "*******************************************************************************\r\n");
-
-	if (ExecutionMode == TEST_CONTROL)
-	{
-		WriteText(hLogFile, "Testing COM Object - %s %s\r\n", CLSID_String, CLSID_Description);
-	}
-	else if (ExecutionMode == IE_LOAD)
-	{
-		WriteText(hLogFile, "Loading COM Object in to IE - %s %s\r\n", CLSID_String, CLSID_Description);
-	}
-	else if (ExecutionMode == PARAMS_IN_IE_PROPBAG)
-	{
-		WriteText(hLogFile, "Testing COM Object PARAMS (Property Bag) in IE - %s %s\r\n", CLSID_String, CLSID_Description);
-	}
-	else if (ExecutionMode == PARAMS_IN_IE_BINARY_SCAN)
-	{
-		WriteText(hLogFile, "Testing COM Object PARAMS (Binary Scan) in IE - %s %s\r\n", CLSID_String, CLSID_Description);
-	}
-	else if (ExecutionMode == GEN_INTERFACE)
-	{
-		WriteText(hLogFile, "Interface for COM Object - %s %s\r\n", CLSID_String, CLSID_Description);
-	}
-	else if (ExecutionMode == PRINT_COM_OBJECT_INFORMATION)
-	{
-		WriteText(hLogFile, "Details for COM Object - %s %s\r\n", CLSID_String, CLSID_Description);
+		LogError("CLSIDFromString('%s') failed: %s", gCLSIDToTest.c_str(),
+			_com_error(hr).ErrorMessage());
+		return CLSID_FROM_STRING_FAILED;
 	}
 
-	if (HaveCOM_Filename) PrintFileInfo(hLogFile, COM_FileName);
-	else
+	// Get the CLSID description...
+	std::string CLSID_Description;
 	{
-		WriteText(hLogFile, "*******************************************************************************\r\n");
-
-		WriteText(hLogFile, "%-20s: %s\r\n", "COM Object Filename", "[UNKNOWN]");
-		WriteText(hLogFile, "*******************************************************************************\r\n");
-
-	}
-	WriteText(hLogFile, "*******************************************************************************\r\n");
-
-	if (ExecutionMode == TEST_CONTROL)
-	{
-		printf("Testing COM Object - %s %s\n", CLSID_String, CLSID_Description);
-	}
-	else if (ExecutionMode == IE_LOAD)
-	{
-		printf("Loading COM Object in to IE - %s %s\n", CLSID_String, CLSID_Description);
-	}
-	else if (ExecutionMode == PARAMS_IN_IE_PROPBAG)
-	{
-		printf("Testing COM Object PARAMS in IE (Property Bag) - %s %s\n", CLSID_String, CLSID_Description);
-	}
-	else if (ExecutionMode == PARAMS_IN_IE_BINARY_SCAN)
-	{
-		printf("Testing COM Object PARAMS in IE (Binary Scan) - %s %s\n", CLSID_String, CLSID_Description);
-	}
-	else if (ExecutionMode == GEN_INTERFACE)
-	{
-		printf("Generating Interface for COM Object - %s %s\n", CLSID_String, CLSID_Description);
-	}
-	else if (ExecutionMode == PRINT_COM_OBJECT_INFORMATION)
-	{
-		printf("Obtaining details for COM Object - %s %s\n", CLSID_String, CLSID_Description);
-	}
-	try {
-		if (ExecutionMode == IE_LOAD)
+		char subkey[100];
+		sprintf_s(subkey, "Software\\Classes\\CLSID\\%hs", gCLSIDToTest.c_str());
+		DWORD length = 0;
+		auto res = ::RegGetValueA(HKEY_LOCAL_MACHINE, subkey, "", RRF_RT_REG_SZ,
+			nullptr, nullptr, &length);
+		if (res == ERROR_SUCCESS && length > 0)
 		{
-			strcat(lpPathBuffer, IELOAD_HTML);
-			DeleteTempFile(lpPathBuffer);
-			if (Create_HTML_Test_File(lpPathBuffer, CLSID_String) != 0)
-			{
-				RetVal = FAILED_TO_CREATE_IE_TEST_FILE;
-			}
-			else
-			{
-				RetVal = IELoadUrl(lpPathBuffer);
-			}
-		}
-		else if (ExecutionMode == PARAMS_IN_IE_PROPBAG)
-		{
-			RetVal = TestParamsPropertyBag(&clsid);
-		}
-		else if (ExecutionMode == PARAMS_IN_IE_BINARY_SCAN)
-		{
-			RetVal = TestParamsViaBinaryScan(&clsid);
-		}
-		else if (ExecutionMode == PRINT_COM_OBJECT_INFORMATION)
-		{
-			RetVal = PrintComObjectInformation(&clsid);
-		}
-
-		else RetVal = TestCOM_Object(&clsid);
-	}
-	catch (const access_violation& e)
-	{
-		try
-		{
-			WriteText(hLogFile, "*****************************\r\n");
-			WriteText(hLogFile, "***   Access Violation    ***\r\n");
-			WriteText(hLogFile, "*****************************\r\n");
-			WriteText(hLogFile, "%s at 0x%p :Bad %s on 0x%p\r\n",
-				e.what(), e.where(), e.isWrite() ? "write" : "read", e.badAddress());
-			WriteText(hLogFile, "*****************************\r\n");
-			CoUninitialize();
-			CloseHandle(hLogFile);
-			return(COM_OBJECT_EXECEPTION_OCCURRED);
-		}
-		catch (...)
-		{
-		}
-
-	}
-	catch (const win32_exception& e)
-	{
-		try
-		{
-			WriteText(hLogFile, "*****************************\r\n");
-			WriteText(hLogFile, "***   Win32 Exception     ***\r\n");
-			WriteText(hLogFile, "*****************************\r\n");
-			WriteText(hLogFile, "%s (code %x) at 0x%p\r\n",
-				e.what(), e.code(), e.where());
-			WriteText(hLogFile, "*****************************\r\n");
-			CoUninitialize();
-			CloseHandle(hLogFile);
-			return(COM_OBJECT_EXECEPTION_OCCURRED);
-		}
-		catch (...)
-		{
+			CLSID_Description.resize(length - 1);
+			::RegGetValueA(HKEY_LOCAL_MACHINE, subkey, "", RRF_RT_REG_SZ, nullptr,
+				&CLSID_Description[0], &length);
 		}
 	}
 
-	try
+	if (gExecutionMode == ExecutionMode::TestControl)
 	{
-		WriteText(hLogFile, "\r\n\r\n");
-		CoUninitialize();
-		CloseHandle(hLogFile);
+		LogInfo("Testing COM Object - %s %s", gCLSIDToTest.c_str(),
+			CLSID_Description.c_str());
 	}
-	catch (...)
+	else if (gExecutionMode == ExecutionMode::GenerateInterface)
 	{
+		LogInfo("Interface for COM Object - %s %s", gCLSIDToTest.c_str(),
+			CLSID_Description.c_str());
 	}
 
-	//printf("Return val %d\n",RetVal);
-	return(RetVal);
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static void PrintUsage(_TCHAR* argv[])                                            //            
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static void PrintUsage(_TCHAR* argv[])
-{
-	fprintf(stderr, "Usage: %s <options> \n", argv[0]);
-	fprintf(stderr, "Options:\n");
-	fprintf(stderr, "        -c <CLSID>        - COM CLSID\n");
-	fprintf(stderr, "        -o <outputfile>   - Output Filename\n");
-	fprintf(stderr, "        -t                - Test COM Object\n");
-	fprintf(stderr, "        -g                - Generate Interface Listing\n");
-	fprintf(stderr, "        -l                - Load in Internet Explorer\n");
-	fprintf(stderr, "        -p                - Test PARAMS (PropertyBag) in Internet Explorer\n");
-	fprintf(stderr, "        -s                - Test PARAMS (Binary Scan) in Internet Explorer\n");
-	fprintf(stderr, "        -i                - Print COM object information\n");
+	if (FAILED(hr = ::CoInitialize(nullptr)))
+	{
+		LogError("CoInitialize() failed: 0x%08X: %s.", hr,
+			_com_error(hr).ErrorMessage());
+		return COINITIALIZE_FAILED;
+	}
+	ON_EXIT_SCOPE(::CoUninitialize());
 
+	IDispatchPtr pIDispatch;
+	hr = pIDispatch.CreateInstance(clsid, nullptr,
+		CLSCTX_LOCAL_SERVER | CLSCTX_INPROC_SERVER);
+	if (FAILED(hr))
+	{
+		LogError("Create instance failed: 0x%08X: %s.", hr,
+			_com_error(hr).ErrorMessage());
+		return QUERY_INTERFACE_FOR_IDISPATCH_FAILED;
+	}
+
+	return TestDispatchInterface(pIDispatch,
+		gExecutionMode != ExecutionMode::TestControl);
 }
 
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static void ParseArguments(int argc, _TCHAR* argv[])                              //            
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static void ParseArguments(int argc, _TCHAR* argv[])
+void ParseArguments(int argc, PSTR argv[])
 {
-	int i;
-	char *c;
-	if (argc < 2)
+	for (auto i = 1; i < argc; ++i)
 	{
-		PrintUsage(argv);
-		exit(2);
-	}
+		const auto arg = argv[i];
 
-	//get arguments
-	for (i = 1; i < argc; i++)
-	{
-		if (argv[i][0] != '-')
+		if (strlen(arg) != 2 || !(arg[0] == '-' || arg[0] == '/'))
 		{
-			fprintf(stderr, "Error in command line\n");
+			LogError("Error in command line: Unexpected value: %s", arg);
 			PrintUsage(argv);
-			if (OutputFileName) free(OutputFileName);
-			if (CLSID_String) free(CLSID_String);
 			exit(2);
 		}
-		c = strchr((char *)"co", argv[i][1]);
-		if (c != NULL)
-			if ((i == (argc - 1)) || (argv[i + 1][0] == '-'))
-			{
-				fprintf(stderr, "option %s requires an argument\n", argv[i]);
-				if (OutputFileName) free(OutputFileName);
-				if (CLSID_String) free(CLSID_String);
-				exit(1);
-			}
-		switch (argv[i][1])
+
+		switch (arg[1])
 		{
 		case 'c':
-			if (CLSID_String == NULL)
+			if (!gCLSIDToTest.empty())
 			{
-				i++;
-				CLSID_String = _strdup(argv[i]);
-			}
-			else
-			{
-				fprintf(stderr, "Error in command line\n");
+				LogError("Invalid command line: -c option can only be used once.");
 				PrintUsage(argv);
-				if (CLSID_String) free(CLSID_String);
 				exit(2);
 			}
+			if (i + 1 >= argc)
+			{
+				LogError(
+					"Invalid command line: -c option must be followed by a CLSID.");
+				PrintUsage(argv);
+				exit(2);
+			}
+			gCLSIDToTest = argv[i + 1];
+			++i;
 			break;
+
 		case 'o':
-			if (OutputFileName == NULL)
+			if (!gLogFileName.empty())
 			{
-				i++;
-				OutputFileName = _strdup(argv[i]);
-			}
-			else
-			{
-				fprintf(stderr, "Error in command line\n");
+				LogError("Invalid command line: -o option can only be used once.");
 				PrintUsage(argv);
-				if (OutputFileName) free(OutputFileName);
-				if (CLSID_String) free(CLSID_String);
 				exit(2);
 			}
+			if (i + 1 >= argc)
+			{
+				LogError(
+					"Invalid command line: -o option must be followed by file path.");
+				PrintUsage(argv);
+				exit(2);
+			}
+			gLogFileName = argv[i + 1];
+			++i;
 			break;
 
 		case 't':
-			if (ExecutionMode == NONE)
-			{
-				ExecutionMode = TEST_CONTROL;
-			}
-			else
-			{
-				fprintf(stderr, "Error in command line\n");
-				PrintUsage(argv);
-				if (OutputFileName) free(OutputFileName);
-				if (CLSID_String) free(CLSID_String);
-				exit(2);
-			}
+			gExecutionMode = ExecutionMode::TestControl;
 			break;
+
 		case 'g':
-			if (ExecutionMode == NONE)
-			{
-				ExecutionMode = GEN_INTERFACE;
-			}
-			else
-			{
-				fprintf(stderr, "Error in command line\n");
-				PrintUsage(argv);
-				if (OutputFileName) free(OutputFileName);
-				if (CLSID_String) free(CLSID_String);
-				exit(2);
-			}
+			gExecutionMode = ExecutionMode::GenerateInterface;
 			break;
-		case 'l':
-			if (ExecutionMode == NONE)
-			{
-				DWORD MajorVersion;
-				ExecutionMode = IE_LOAD;
-				if (!GetIeVersion(&MajorVersion, NULL, NULL, NULL))
-				{
-					if (MajorVersion >= 7) ZoneID = 1;
-					else ZoneID = 3;
-				}
-				else ZoneID = 3;
-
-			}
-			else
-			{
-				fprintf(stderr, "Error in command line\n");
-				PrintUsage(argv);
-				if (OutputFileName) free(OutputFileName);
-				if (CLSID_String) free(CLSID_String);
-				exit(2);
-			}
-			break;
-		case 'p':
-			if (ExecutionMode == NONE)
-			{
-				DWORD MajorVersion;
-				ExecutionMode = PARAMS_IN_IE_PROPBAG;
-				if (!GetIeVersion(&MajorVersion, NULL, NULL, NULL))
-				{
-					if (MajorVersion >= 7) ZoneID = 1;
-					else ZoneID = 3;
-				}
-				else ZoneID = 3;
-			}
-			else
-			{
-				fprintf(stderr, "Error in command line\n");
-				PrintUsage(argv);
-				if (OutputFileName) free(OutputFileName);
-				if (CLSID_String) free(CLSID_String);
-				exit(2);
-			}
-			break;
-		case 's':
-			if (ExecutionMode == NONE)
-			{
-				DWORD MajorVersion;
-				ExecutionMode = PARAMS_IN_IE_BINARY_SCAN;
-				if (!GetIeVersion(&MajorVersion, NULL, NULL, NULL))
-				{
-					if (MajorVersion >= 7) ZoneID = 1;
-					else ZoneID = 3;
-				}
-				else ZoneID = 3;
-
-			}
-			else
-			{
-				fprintf(stderr, "Error in command line\n");
-				PrintUsage(argv);
-				if (OutputFileName) free(OutputFileName);
-				if (CLSID_String) free(CLSID_String);
-				exit(2);
-			}
-			break;
-
-		case 'i':
-			if (ExecutionMode == NONE)
-			{
-				ExecutionMode = PRINT_COM_OBJECT_INFORMATION;
-			}
-			else
-			{
-				fprintf(stderr, "Error in command line\n");
-				PrintUsage(argv);
-				if (OutputFileName) free(OutputFileName);
-				if (CLSID_String) free(CLSID_String);
-				exit(2);
-			}
-			break;
-
 
 		case '?':
 			PrintUsage(argv);
@@ -578,3730 +229,869 @@ static void ParseArguments(int argc, _TCHAR* argv[])
 			break;
 
 		default:
-			fprintf(stderr, "Error in command line\n");
+			LogError("Error in command line: Unknown option: %s", arg);
 			PrintUsage(argv);
-			if (OutputFileName) free(OutputFileName);
-			if (CLSID_String) free(CLSID_String);
 			exit(2);
 			break;
-
 		}
 	}
 
-	if (CLSID_String == NULL)
+	if (gCLSIDToTest.empty())
 	{
-		printf("Error: CLSID not specified -c <CLSID>\n");
-		if (OutputFileName) free(OutputFileName);
+		LogError("Error: CLSID not specified.");
+		PrintUsage(argv);
 		exit(1);
 	}
-	if (ExecutionMode == NONE)
+	if (gExecutionMode == ExecutionMode::None)
 	{
-		printf("Error: Execution mode not specified use -t or -g <CLSID>\n");
-		if (OutputFileName) free(OutputFileName);
-		if (CLSID_String) free(CLSID_String);
+		LogError("Error: Execution mode not specified.");
+		PrintUsage(argv);
 		exit(1);
 	}
-
 }
-///////////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                          //
-/// static int GetIeVersion(DWORD * Major, DWORD * Minor,DWORD *BuildNo, DWORD *SubBuildNo)  //
-///                                                                                          //
-///////////////////////////////////////////////////////////////////////////////////////////////
 
-static int GetIeVersion(DWORD * Major, DWORD * Minor, DWORD *BuildNo, DWORD *SubBuildNo)
+std::wstring Widen(PCSTR pStr, int cbStr /*= -1*/)
 {
-	HKEY hKey;
-
-	if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, "Software\\Microsoft\\Internet Explorer", 0, KEY_QUERY_VALUE, &hKey) == ERROR_SUCCESS)
+	assert(pStr);
+	assert(cbStr >= -1);
+	if (cbStr == -1)
+		cbStr = strlen(pStr);
+	if (cbStr == 0)
+		return {};
+	const auto cch = ::MultiByteToWideChar(CP_UTF8, 0, pStr, cbStr, nullptr, 0);
+	std::wstring str(cch, L'\0');
+	if (cch == 0)
 	{
-		char VersionString[256];
-		DWORD VersionStringSize = sizeof(VersionString);
-
-		if (RegQueryValueEx(hKey, "Version", NULL, NULL, (LPBYTE)VersionString, &VersionStringSize) == ERROR_SUCCESS)
-		{
-			char *SubStr;
-
-			SubStr = strtok(VersionString, ".");
-			if ((SubStr) && (Major)) *Major = atoi(SubStr);
-			else if (Major) *Major = 0;
-
-			SubStr = strtok(NULL, ".");
-			if ((SubStr) && (Minor)) *Minor = atoi(SubStr);
-			else if (Minor) *Minor = 0;
-
-			SubStr = strtok(NULL, ".");
-			if ((SubStr) && (BuildNo)) *BuildNo = atoi(SubStr);
-			else if (BuildNo) *BuildNo = 0;
-
-			SubStr = strtok(NULL, ".");
-			if ((SubStr) && (SubBuildNo)) *SubBuildNo = atoi(SubStr);
-			else if (SubBuildNo) *SubBuildNo = 0;
-
-			RegCloseKey(hKey);
-			return(0);
-		}
-		else RegCloseKey(hKey);
+		LogError("Error widening string (%u).", ::GetLastError());
+		return {};
 	}
-	return(-1);
+	::MultiByteToWideChar(CP_UTF8, 0, pStr, cbStr, &str[0], cch);
+	assert(::GetLastError() == 0);
+	return str;
 }
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static WriteText(HANDLE hFile,char *Text)                                         //
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static bool WriteText(HANDLE hFile, _In_z_ _Printf_format_string_ const char *Format, ...)
+std::wstring Widen(const std::string &str)
+{
+	return Widen(str.c_str(), static_cast<int>(str.size()));
+}
+
+std::string Narrow(PCWSTR pStr, int cchStr /*= -1*/)
+{
+	assert(pStr);
+	assert(cchStr >= -1);
+	if (cchStr == -1)
+		cchStr = wcslen(pStr);
+	if (cchStr == 0)
+		return {};
+	const auto cb = ::WideCharToMultiByte(CP_UTF8, 0, pStr, cchStr, nullptr, 0,
+		nullptr, nullptr);
+	if (cb == 0)
+	{
+		LogError("Error narrowing string (%u).", ::GetLastError());
+		return {};
+	}
+	std::string str(cb, L'\0');
+	::WideCharToMultiByte(CP_UTF8, 0, pStr, cchStr, &str[0], cb, nullptr,
+		nullptr);
+	assert(::GetLastError() == 0);
+	return str;
+}
+std::string Narrow(const std::wstring &str)
+{
+	return Narrow(str.c_str(), static_cast<int>(str.size()));
+}
+
+std::string FormatV(_Printf_format_string_ PCSTR Format, va_list va)
+{
+	// The following code optimistically assumes most values will fit in the fixed
+	// buffer.
+	char fixed[1024];
+	auto len = _vsnprintf_s(fixed, _TRUNCATE, Format, va);
+	if (len >= 0)
+		return std::string(fixed, len);
+
+	// Truncated. Calculate the required size....
+	len = vsnprintf(nullptr, 0, Format, va);
+	if (len < 0)
+		return "<format error>";
+	std::string str(len, '\0');
+	vsprintf_s(&str[0], str.size() + 1, Format, va);
+	return str;
+}
+
+std::string Format(_Printf_format_string_ PCSTR Format, ...)
 {
 	va_list va;
 	va_start(va, Format);
-	auto len = vsnprintf(nullptr, 0, Format, va);
+	auto str = FormatV(Format, va);
 	va_end(va);
-	if (len < 0)
-		return false;
-
-	char fixed[1024];
-	auto buf = len < sizeof(fixed) ? fixed : new char[len + 1];
-
-	va_start(va, Format);
-	vsprintf_s(buf, len + 1, Format, va);
-	va_end(va);
-
-	while (len > 0)
-	{
-		DWORD BytesWritten;
-		if (::WriteFile(hFile, buf, len, &BytesWritten, 0) == 0)
-		{
-			if (buf != fixed)
-				delete[] buf;
-			return false;
-		}
-		buf += BytesWritten;
-		len -= BytesWritten;
-	}
-
-	if (buf != fixed)
-		delete[] buf;
-	return true;
+	return str;
 }
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static int Get_CLSID_Description()                                                //            
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static int Get_CLSID_Description(TCHAR *pCLSID_String, TCHAR *Description, DWORD DescriptionLength)
+
+void Log(PCSTR text, size_t length = -1)
 {
-	TCHAR KeyString[1024];
-	HKEY  hKey;
-	int  RetVal = SUCCESS;
-	DWORD Type;
-	TCHAR trim[] = TEXT(" \0");
+	if (text && length == -1)
+		length = strlen(text);
+	if (!text || length == 0)
+		return;
 
-	sprintf(KeyString, "Software\\Classes\\CLSID\\%s", pCLSID_String);
-	if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, KeyString, 0, KEY_QUERY_VALUE, &hKey) !=
-		ERROR_SUCCESS)
+	// Always write to stdout
+	std::cout.write(text, length);
+
+	// Write to log file
+	if (gLogFileHandle)
 	{
-		return(REG_OPEN_KEY_CLSID_CLSID_STRING_FAILED);
-	}
-	if (RegQueryValueEx(hKey, NULL, NULL, &Type, (BYTE *)Description,
-		&DescriptionLength) != ERROR_SUCCESS)
-	{
-		strcpy(Description, "[DESCRIPTION NOT AVAILABLE]");
-	}
-	else
-	{
-		StrTrim(Description, trim);
-		if (_tcsclen(Description) == 0)
-			strcpy(Description, "[DESCRIPTION NOT AVAILABLE]");
-	}
-
-
-	RegCloseKey(hKey);
-	return(RetVal);
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static char *stristr(const char *String, const char *Pattern)                     //            
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-
-char *stristr(const char *String, const char *Pattern)
-{
-	char *pptr, *sptr, *start;
-	size_t  slen, plen;
-
-	for (start = (char *)String, pptr = (char *)Pattern, slen = strlen(String), plen = strlen(Pattern);
-		slen >= plen; start++, slen--)
-	{
-		/* find start of pattern in string */
-		while (toupper(*start) != toupper(*Pattern))
+		do
 		{
-			start++;
-			slen--;
-
-			/* if pattern longer than string */
-
-			if (slen < plen)
-				return(NULL);
-		}
-
-		sptr = start;
-		pptr = (char *)Pattern;
-
-		while (toupper(*sptr) == toupper(*pptr))
-		{
-			sptr++;
-			pptr++;
-
-			/* if end of pattern then pattern was found */
-
-			if ('\0' == *pptr)
-				return (start);
-		}
-	}
-	return(NULL);
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static void RemoveExtraneousArgs(char *Filename)                                  //            
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static void RemoveExtraneousArgs(char *Filename)
-{
-	char *substr;
-	substr = stristr(Filename, ".dll");
-	if (substr)
-	{
-		substr[4] = NULL;
-		return;
-	}
-	substr = stristr(Filename, ".exe");
-	if (substr)
-	{
-		substr[4] = NULL;
-		return;
-	}
-	substr = stristr(Filename, ".ocx");
-	if (substr)
-	{
-		substr[4] = NULL;
-		return;
-	}
-	substr = stristr(Filename, ".cpl");
-	if (substr)
-	{
-		substr[4] = NULL;
-		return;
-	}
-	substr = stristr(Filename, ".wsc");
-	if (substr)
-	{
-		substr[4] = NULL;
-		return;
-	}
-	substr = stristr(Filename, ".acm");
-	if (substr)
-	{
-		substr[4] = NULL;
-		return;
-	}
-	substr = stristr(Filename, ".flt");
-	if (substr)
-	{
-		substr[4] = NULL;
-		return;
-	}
-	substr = stristr(Filename, ".mdw");
-	if (substr)
-	{
-		substr[4] = NULL;
-		return;
-	}
-	substr = stristr(Filename, ".ax");
-	if (substr)
-	{
-		substr[3] = NULL;
-		return;
-	}
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static void ExpandEnvironmentVars(char *Filename,DWORD FileNameLength)            //            
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static void ExpandEnvironmentVars(char *Filename, DWORD FileNameLength)
-{
-	char *tempstr;
-
-	if (Filename == NULL) return;
-	if ((tempstr = _strdup(Filename)) == NULL) return;
-	if (ExpandEnvironmentStrings(tempstr, Filename, FileNameLength) == 0)
-	{
-		strcpy(Filename, tempstr);
-	}
-	free(tempstr);
-	return;
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// int Get_COM_FileName(TCHAR *pCLSID_String,TCHAR *FileName,DWORD FileNameLength)    //            
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static int Get_COM_FileName(TCHAR *pCLSID_String, TCHAR *FileName, DWORD FileNameLength)
-{
-	TCHAR KeyString[1024];
-	HKEY  hKey;
-	DWORD Count = 0;
-	DWORD Type;
-	TCHAR trim[] = TEXT(" \0");
-	TCHAR CLSID_Temp[512];
-	DWORD CLSID_Temp_Length;
-	DWORD Temp_Length;
-
-	if (pCLSID_String == NULL) return(-1);
-
-	StrCpy(CLSID_Temp, pCLSID_String);
-	while (1)
-	{
-		sprintf(KeyString, "Software\\Classes\\CLSID\\%s\\InprocServer32", CLSID_Temp);
-		if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, KeyString, 0, KEY_QUERY_VALUE, &hKey) ==
-			ERROR_SUCCESS)
-		{
-			Temp_Length = FileNameLength;
-			if (RegQueryValueEx(hKey, NULL, NULL, &Type, (BYTE *)FileName,
-				&Temp_Length) == ERROR_SUCCESS)
-			{
-				StrTrim(FileName, trim);
-				if (_tcsclen(FileName) != 0)
-				{
-					RegCloseKey(hKey);
-					RemoveExtraneousArgs(FileName);
-					ExpandEnvironmentVars(FileName, FileNameLength);
-					DeQuoteString(FileName);
-					return(SUCCESS);
-				}
-			}
-			RegCloseKey(hKey);
-		}
-
-		sprintf(KeyString, "Software\\Classes\\CLSID\\%s\\InprocHandler32", CLSID_Temp);
-		if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, KeyString, 0, KEY_QUERY_VALUE, &hKey) ==
-			ERROR_SUCCESS)
-		{
-			Temp_Length = FileNameLength;
-			if (RegQueryValueEx(hKey, NULL, NULL, &Type, (BYTE *)FileName,
-				&Temp_Length) == ERROR_SUCCESS)
-			{
-				StrTrim(FileName, trim);
-				if (_tcsclen(FileName) != 0)
-				{
-					RegCloseKey(hKey);
-					RemoveExtraneousArgs(FileName);
-					ExpandEnvironmentVars(FileName, FileNameLength);
-					DeQuoteString(FileName);
-					return(SUCCESS);
-				}
-			}
-			RegCloseKey(hKey);
-		}
-
-		sprintf(KeyString, "Software\\Classes\\CLSID\\%s\\LocalServer32", CLSID_Temp);
-		if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, KeyString, 0, KEY_QUERY_VALUE, &hKey) ==
-			ERROR_SUCCESS)
-		{
-			Temp_Length = FileNameLength;
-			if (RegQueryValueEx(hKey, NULL, NULL, &Type, (BYTE *)FileName,
-				&Temp_Length) == ERROR_SUCCESS)
-			{
-				StrTrim(FileName, trim);
-				if (_tcsclen(FileName) != 0)
-				{
-					RegCloseKey(hKey);
-					RemoveExtraneousArgs(FileName);
-					ExpandEnvironmentVars(FileName, FileNameLength);
-					DeQuoteString(FileName);
-					return(SUCCESS);
-				}
-			}
-			RegCloseKey(hKey);
-		}
-		sprintf(KeyString, "Software\\Classes\\CLSID\\%s\\InprocServer", CLSID_Temp);
-		if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, KeyString, 0, KEY_QUERY_VALUE, &hKey) ==
-			ERROR_SUCCESS)
-		{
-			Temp_Length = FileNameLength;
-			if (RegQueryValueEx(hKey, NULL, NULL, &Type, (BYTE *)FileName,
-				&Temp_Length) == ERROR_SUCCESS)
-			{
-				StrTrim(FileName, trim);
-				if (_tcsclen(FileName) != 0)
-				{
-					RegCloseKey(hKey);
-					RemoveExtraneousArgs(FileName);
-					ExpandEnvironmentVars(FileName, FileNameLength);
-					DeQuoteString(FileName);
-					return(SUCCESS);
-				}
-			}
-			RegCloseKey(hKey);
-		}
-		sprintf(KeyString, "Software\\Classes\\CLSID\\%s\\LocalServer", CLSID_Temp);
-		if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, KeyString, 0, KEY_QUERY_VALUE, &hKey) ==
-			ERROR_SUCCESS)
-		{
-			Temp_Length = FileNameLength;
-			if (RegQueryValueEx(hKey, NULL, NULL, &Type, (BYTE *)FileName,
-				&Temp_Length) == ERROR_SUCCESS)
-			{
-				StrTrim(FileName, trim);
-				if (_tcsclen(FileName) != 0)
-				{
-					RegCloseKey(hKey);
-					RemoveExtraneousArgs(FileName);
-					ExpandEnvironmentVars(FileName, FileNameLength);
-					DeQuoteString(FileName);
-					return(SUCCESS);
-				}
-			}
-			RegCloseKey(hKey);
-		}
-
-		sprintf(KeyString, "Software\\Classes\\CLSID\\%s\\TreatAs", CLSID_Temp);
-		if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, KeyString, 0, KEY_QUERY_VALUE, &hKey) ==
-			ERROR_SUCCESS)
-		{
-			CLSID_Temp_Length = sizeof(CLSID_Temp);
-			if (RegQueryValueEx(hKey, NULL, NULL, &Type, (BYTE *)CLSID_Temp,
-				&CLSID_Temp_Length) == ERROR_SUCCESS)
-			{
-				RegCloseKey(hKey);
-			}
-			else
-			{
-				RegCloseKey(hKey);
+			DWORD BytesWritten;
+			if (!::WriteFile(gLogFileHandle, text, length, &BytesWritten, 0))
 				break;
-			}
-		}
-		else
-		{
-			break;
-		}
-		Count++;
-		if (Count > 10) break;
-	}
-
-
-	strcpy(FileName, "[FILENAME NOT AVAILABLE]");
-	return(-1);
-
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static BOOL GetTranslationId(LPVOID lpData, UINT unBlockSize, WORD wLangId,       //
-///                               DWORD &dwId, BOOL bPrimaryEnough)                   //            
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-
-static BOOL GetTranslationId(LPVOID lpData, UINT unBlockSize, WORD wLangId, DWORD &dwId, BOOL bPrimaryEnough)
-{
-	for (LPWORD lpwData = (LPWORD)lpData; (LPBYTE)lpwData < ((LPBYTE)lpData) + unBlockSize; lpwData += 2)
-	{
-		if (*lpwData == wLangId)
-		{
-			dwId = *((DWORD*)lpwData);
-			return TRUE;
-		}
-	}
-
-	if (!bPrimaryEnough)
-		return FALSE;
-
-	for (LPWORD lpwData = (LPWORD)lpData; (LPBYTE)lpwData < ((LPBYTE)lpData) + unBlockSize; lpwData += 2)
-	{
-		if (((*lpwData) & 0x00FF) == (wLangId & 0x00FF))
-		{
-			dwId = *((DWORD*)lpwData);
-			return TRUE;
-		}
-	}
-
-	return FALSE;
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// int PrintFileInfo(HANDLE handle,TCHAR *FileName)                                  //            
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static int PrintFileInfo(HANDLE handle, TCHAR *FileName)
-{
-	DWORD dwHandle, dwLen;
-	UINT BufLen;
-	LPTSTR lpData, lpBuffer;
-	VS_FIXEDFILEINFO *pFileInfo;
-	DWORD	dwLangCode = 0;
-	char   StringInfo[MAX_PATH];
-
-
-	dwLen = GetFileVersionInfoSize(FileName, &dwHandle);
-	WriteText(handle, "*******************************************************************************\r\n");
-	WriteText(handle, "%-20s: %s\r\n", "COM Object Filename", FileName);
-
-	if (!dwLen)
-	{
-		WriteText(handle, "%-20s: %s\r\n", "Version Info", "not found");
-		WriteText(handle, "*******************************************************************************\r\n");
-		return -1;
-	}
-	if ((lpData = (LPTSTR)malloc(dwLen)) == NULL)return -1;
-	if (!GetFileVersionInfo(FileName, dwHandle, dwLen, lpData))
-	{
-		free(lpData);
-		WriteText(handle, "%-20s: %s\r\n", "Version Info", "not found");
-		WriteText(handle, "*******************************************************************************\r\n");
-		return -1;
-	}
-	if (!VerQueryValue(lpData, "\\", (LPVOID *)&pFileInfo, (PUINT)&BufLen))
-	{
-		WriteText(handle, "%-20s: %s\r\n", "Version Info", "not found");
-	}
-	else
-	{
-		WriteText(handle, "%-20s: %d\r\n", "Major Version", HIWORD(pFileInfo->dwFileVersionMS));
-		WriteText(handle, "%-20s: %d\r\n", "Minor Version", LOWORD(pFileInfo->dwFileVersionMS));
-		WriteText(handle, "%-20s: %d\r\n", "Build Number", HIWORD(pFileInfo->dwFileVersionLS));
-		WriteText(handle, "%-20s: %d\r\n", "Revision Number", LOWORD(pFileInfo->dwFileVersionLS));
-	}
-
-	// find best matching language and codepage
-	VerQueryValue(lpData, _T("\\VarFileInfo\\Translation"), (LPVOID *)&pFileInfo, (PUINT)&BufLen);
-
-	if (!GetTranslationId(pFileInfo, BufLen, GetUserDefaultLangID(), dwLangCode, FALSE))
-	{
-		if (!GetTranslationId(pFileInfo, BufLen, GetUserDefaultLangID(), dwLangCode, TRUE))
-		{
-			if (!GetTranslationId(pFileInfo, BufLen, MAKELANGID(LANG_NEUTRAL, SUBLANG_NEUTRAL), dwLangCode, TRUE))
-			{
-				if (!GetTranslationId(pFileInfo, BufLen, MAKELANGID(LANG_ENGLISH, SUBLANG_NEUTRAL), dwLangCode, TRUE))
-					dwLangCode = *((DWORD*)pFileInfo);
-			}
-		}
-	}
-
-
-
-	sprintf(StringInfo, "\\StringFileInfo\\%04X%04X\\%s", dwLangCode & 0x0000FFFF, (dwLangCode & 0xFFFF0000) >> 16,
-		"ProductVersion");
-	if (!VerQueryValue(lpData, StringInfo, (LPVOID *)&lpBuffer, (PUINT)&BufLen))
-	{
-		WriteText(handle, "%-20s: %s\r\n", "Product Version", "not found");
-	}
-	else
-	{
-		WriteText(handle, "%-20s: %s\r\n", "Product Version", lpBuffer);
-	}
-
-	sprintf(StringInfo, "\\StringFileInfo\\%04X%04X\\%s", dwLangCode & 0x0000FFFF, (dwLangCode & 0xFFFF0000) >> 16,
-		"ProductName");
-	if (!VerQueryValue(lpData, StringInfo, (LPVOID *)&lpBuffer, (PUINT)&BufLen))
-	{
-		WriteText(handle, "%-20s: %s\r\n", "Product Name", "not found");
-	}
-	else
-	{
-		WriteText(handle, "%-20s: %s\r\n", "Product Name", lpBuffer);
-	}
-
-
-	sprintf(StringInfo, "\\StringFileInfo\\%04X%04X\\%s", dwLangCode & 0x0000FFFF, (dwLangCode & 0xFFFF0000) >> 16,
-		"CompanyName");
-	if (!VerQueryValue(lpData, StringInfo, (LPVOID *)&lpBuffer, (PUINT)&BufLen))
-	{
-		WriteText(handle, "%-20s: %s\r\n", "Company Name", "not found");
-	}
-	else
-	{
-		WriteText(handle, "%-20s: %s\r\n", "Company Name", lpBuffer);
-	}
-
-	sprintf(StringInfo, "\\StringFileInfo\\%04X%04X\\%s", dwLangCode & 0x0000FFFF, (dwLangCode & 0xFFFF0000) >> 16,
-		"LegalCopyright");
-	if (!VerQueryValue(lpData, StringInfo, (LPVOID *)&lpBuffer, (PUINT)&BufLen))
-	{
-		WriteText(handle, "%-20s: %s\r\n", "Legal Copyright", "not found");
-	}
-	else
-	{
-		WriteText(handle, "%-20s: %s\r\n", "Legal Copyright", lpBuffer);
-	}
-
-	sprintf(StringInfo, "\\StringFileInfo\\%04X%04X\\%s", dwLangCode & 0x0000FFFF, (dwLangCode & 0xFFFF0000) >> 16,
-		"Comments");
-	if (!VerQueryValue(lpData, StringInfo, (LPVOID *)&lpBuffer, (PUINT)&BufLen))
-	{
-		WriteText(handle, "%-20s: %s\r\n", "Comments", "not found");
-	}
-	else
-	{
-		WriteText(handle, "%-20s: %s\r\n", "Comments", lpBuffer);
-	}
-
-	sprintf(StringInfo, "\\StringFileInfo\\%04X%04X\\%s", dwLangCode & 0x0000FFFF, (dwLangCode & 0xFFFF0000) >> 16,
-		"FileDescription");
-	if (!VerQueryValue(lpData, StringInfo, (LPVOID *)&lpBuffer, (PUINT)&BufLen))
-	{
-		WriteText(handle, "%-20s: %s\r\n", "File Description", "not found");
-	}
-	else
-	{
-		WriteText(handle, "%-20s: %s\r\n", "File Description", lpBuffer);
-	}
-
-	sprintf(StringInfo, "\\StringFileInfo\\%04X%04X\\%s", dwLangCode & 0x0000FFFF, (dwLangCode & 0xFFFF0000) >> 16,
-		"FileVersion");
-	if (!VerQueryValue(lpData, StringInfo, (LPVOID *)&lpBuffer, (PUINT)&BufLen))
-	{
-		WriteText(handle, "%-20s: %s\r\n", "File Version", "not found");
-	}
-	else
-	{
-		WriteText(handle, "%-20s: %s\r\n", "File Version", lpBuffer);
-	}
-
-	sprintf(StringInfo, "\\StringFileInfo\\%04X%04X\\%s", dwLangCode & 0x0000FFFF, (dwLangCode & 0xFFFF0000) >> 16,
-		"InternalName");
-	if (!VerQueryValue(lpData, StringInfo, (LPVOID *)&lpBuffer, (PUINT)&BufLen))
-	{
-		WriteText(handle, "%-20s: %s\r\n", "Internal Name", "not found");
-	}
-	else
-	{
-		WriteText(handle, "%-20s: %s\r\n", "Internal Name", lpBuffer);
-	}
-
-	sprintf(StringInfo, "\\StringFileInfo\\%04X%04X\\%s", dwLangCode & 0x0000FFFF, (dwLangCode & 0xFFFF0000) >> 16,
-		"LegalTrademarks");
-	if (!VerQueryValue(lpData, StringInfo, (LPVOID *)&lpBuffer, (PUINT)&BufLen))
-	{
-		WriteText(handle, "%-20s: %s\r\n", "Legal Trademarks", "not found");
-	}
-	else
-	{
-		WriteText(handle, "%-20s: %s\r\n", "Legal Trademarks", lpBuffer);
-	}
-
-	sprintf(StringInfo, "\\StringFileInfo\\%04X%04X\\%s", dwLangCode & 0x0000FFFF, (dwLangCode & 0xFFFF0000) >> 16,
-		"PrivateBuild");
-	if (!VerQueryValue(lpData, StringInfo, (LPVOID *)&lpBuffer, (PUINT)&BufLen))
-	{
-		WriteText(handle, "%-20s: %s\r\n", "Private Build", "not found");
-	}
-	else
-	{
-		WriteText(handle, "%-20s: %s\r\n", "Private Build", lpBuffer);
-	}
-
-	sprintf(StringInfo, "\\StringFileInfo\\%04X%04X\\%s", dwLangCode & 0x0000FFFF, (dwLangCode & 0xFFFF0000) >> 16,
-		"SpecialBuild");
-	if (!VerQueryValue(lpData, StringInfo, (LPVOID *)&lpBuffer, (PUINT)&BufLen))
-	{
-		WriteText(handle, "%-20s: %s\r\n", "Special Build", "not found");
-	}
-	else
-	{
-		WriteText(handle, "%-20s: %s\r\n", "Special Build", lpBuffer);
-	}
-
-	sprintf(StringInfo, "\\StringFileInfo\\%04X%04X\\%s", dwLangCode & 0x0000FFFF, (dwLangCode & 0xFFFF0000) >> 16,
-		"Language");
-	if (!VerQueryValue(lpData, StringInfo, (LPVOID *)&lpBuffer, (PUINT)&BufLen))
-	{
-		WriteText(handle, "%-20s: %s\r\n", "Language", "not found");
-	}
-	else
-	{
-		WriteText(handle, "%-20s: %s\r\n", "Language", lpBuffer);
-	}
-
-	free(lpData);
-
-	WriteText(handle, "*******************************************************************************\r\n");
-	return(0);
-}
-
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static int Get_CLSID_From_String()                                                //            
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static int Get_CLSID_From_String(TCHAR *pCLSID_String, CLSID *clsid)
-{
-	WCHAR CLSID_Str_Wide[MAX_PATH];
-	DWORD CLSID_Str_Wide_Length = MAX_PATH;
-
-	if (MultiByteToWideChar(CP_ACP, MB_PRECOMPOSED,
-		pCLSID_String, -1,
-		CLSID_Str_Wide, CLSID_Str_Wide_Length) == 0) return(MULTIBYTE_TO_WIDE_CHAR_FAILED);
-	if (CLSIDFromString(CLSID_Str_Wide, clsid) != NOERROR) return(CLSID_FROM_STRING_FAILED);
-
-	return(SUCCESS);
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// int TestCOM_Object(CLSID *clsid)                                                  //            
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static int TestCOM_Object(CLSID *clsid)
-{
-	HRESULT        hResult = E_FAIL;
-	IObjectSafety *pIObjectSafety = NULL;
-	int            RetVal;
-
-	try
-	{
-
-		hResult = CoCreateInstance(*clsid, NULL, CLSCTX_LOCAL_SERVER | CLSCTX_INPROC_SERVER,
-			IID_IObjectSafety, (void**)&pIObjectSafety);
-	}
-	catch (...)
-	{
-		pIObjectSafety = NULL;
-	}
-	if ((hResult == S_OK) && (pIObjectSafety != NULL))
-	{
-		bool IDispatchEx_SafeForScripting = false;
-		bool IDispatch_SafeForScripting = false;
-
-		try
-		{
-			hResult = pIObjectSafety->SetInterfaceSafetyOptions(IID_IDispatchEx,
-				INTERFACESAFE_FOR_UNTRUSTED_CALLER, INTERFACESAFE_FOR_UNTRUSTED_CALLER);
-			if (hResult == S_OK) IDispatchEx_SafeForScripting = true;
-
-			hResult = pIObjectSafety->SetInterfaceSafetyOptions(IID_IDispatch,
-				INTERFACESAFE_FOR_UNTRUSTED_CALLER, INTERFACESAFE_FOR_UNTRUSTED_CALLER);
-			if (hResult == S_OK)IDispatch_SafeForScripting = true;
-		}
-		catch (...)
-		{
-			pIObjectSafety->Release();
-			return(COM_OBJECTSAFETY_SET_INTERFACE_OPT_FAULT);
-		}
-		if ((IDispatchEx_SafeForScripting) || (IDispatch_SafeForScripting))
-		{
-			if (IDispatchEx_SafeForScripting)
-			{
-				IDispatchEx * pIDispatchEx = NULL;
-				hResult = pIObjectSafety->QueryInterface(IID_IDispatchEx, (void**)&pIDispatchEx);
-				if (hResult == S_OK)
-				{
-					if (ExecutionMode == TEST_CONTROL)
-					{
-						RetVal = Test_DispatchEx_Interface(pIDispatchEx, 0);
-						pIDispatchEx->Release();
-						pIObjectSafety->Release();
-						return(RetVal);
-					}
-					else if (ExecutionMode == GEN_INTERFACE)
-					{
-						RetVal = PrintInterfaceInfo(pIDispatchEx);
-						pIDispatchEx->Release();
-						pIObjectSafety->Release();
-						return(RetVal);
-					}
-					else return(SUCCESS);
-				}
-				else
-				{
-					if (IDispatch_SafeForScripting)
-					{
-						IDispatch * pIDispatch = NULL;
-						hResult = pIObjectSafety->QueryInterface(IID_IDispatch, (void**)&pIDispatch);
-						if (hResult == S_OK)
-						{
-							if (ExecutionMode == TEST_CONTROL)
-							{
-								RetVal = Test_Dispatch_Interface(pIDispatch, 0);
-								pIDispatch->Release();
-								pIObjectSafety->Release();
-								return(RetVal);
-							}
-							else if (ExecutionMode == GEN_INTERFACE)
-							{
-								RetVal = PrintInterfaceInfo(pIDispatch);
-								pIDispatch->Release();
-								pIObjectSafety->Release();
-								return(RetVal);
-							}
-							else return(SUCCESS);
-						}
-						else
-						{
-							pIObjectSafety->Release();
-							return(QUERY_INTERFACE_FOR_IDISPATCH_FAILED);
-						}
-					}
-					else
-					{
-						pIObjectSafety->Release();
-						return(QUERY_INTERFACE_FOR_IDISPATCH_EX_FAILED);
-					}
-				}
-			}
-			else
-			{
-				IDispatch * pIDispatch = NULL;
-				hResult = pIObjectSafety->QueryInterface(IID_IDispatch, (void**)&pIDispatch);
-				if (hResult == S_OK)
-				{
-					if (ExecutionMode == TEST_CONTROL)
-					{
-						RetVal = Test_Dispatch_Interface(pIDispatch, 0);
-						pIDispatch->Release();
-						pIObjectSafety->Release();
-						return(RetVal);
-					}
-					else if (ExecutionMode == GEN_INTERFACE)
-					{
-						RetVal = PrintInterfaceInfo(pIDispatch);
-						pIDispatch->Release();
-						pIObjectSafety->Release();
-						return(RetVal);
-					}
-					else return(SUCCESS);
-				}
-				else
-				{
-					pIObjectSafety->Release();
-					return(QUERY_INTERFACE_FOR_IDISPATCH_FAILED);
-				}
-			}
-
-		}
-		else
-		{
-			pIObjectSafety->Release();
-			return(COM_OBJECT_NOT_SCRIPT_SAFE);
-		}
-
-	}
-	else
-	{
-		LPOLESTR CLSID_String_Wide;
-		LONG     RetValue;
-		HKEY     hKeyQ;
-		TCHAR    RegKey[1024];
-		bool     RegistryEntrySafeForScripting = false;
-
-		hResult = StringFromCLSID(*clsid, &CLSID_String_Wide);
-		if (FAILED(hResult))
-		{
-			return(STRING_FROM_CLSID_FAILED);
-		}
-		sprintf(RegKey, "Software\\Classes\\CLSID\\%ws\\Implemented Categories\\{7DD95801-9882-11CF-9FA9-00AA006C42C4}", CLSID_String_Wide);
-		RetValue = RegOpenKeyEx(HKEY_LOCAL_MACHINE, RegKey, 0, KEY_QUERY_VALUE, &hKeyQ);
-		RegCloseKey(hKeyQ);
-		if (RetValue == ERROR_SUCCESS) RegistryEntrySafeForScripting = true;
-		CoTaskMemFree(CLSID_String_Wide);
-		if (RegistryEntrySafeForScripting)
-		{
-			IDispatch * pIDispatch = NULL;
-
-			hResult = CoCreateInstance(*clsid, NULL, CLSCTX_LOCAL_SERVER | CLSCTX_INPROC_SERVER, IID_IDispatch, (void**)&pIDispatch);
-			if (hResult == S_OK)
-			{
-				if (ExecutionMode == TEST_CONTROL)
-				{
-					RetVal = Test_Dispatch_Interface(pIDispatch, 0);
-					pIDispatch->Release();
-					return(RetVal);
-				}
-				else if (ExecutionMode == GEN_INTERFACE)
-				{
-					RetVal = PrintInterfaceInfo(pIDispatch);
-					pIDispatch->Release();
-					return(RetVal);
-				}
-				else return(SUCCESS);
-			}
-			else
-			{
-				return(QUERY_INTERFACE_FOR_IDISPATCH_FAILED);
-			}
-
-		}
-		else
-		{
-			return(COM_OBJECT_NOT_SCRIPT_SAFE);
-		}
-
+			text += BytesWritten;
+			length -= BytesWritten;
+		} while (length > 0);
 	}
 }
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// int PrintComObjectInformation(CLSID *clsid)                                       //            
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static int PrintComObjectInformation(CLSID *clsid)
+void Log(const std::string &text) { Log(text.c_str(), text.size()); }
+
+void LogInfo(_Printf_format_string_ PCSTR Format, ...)
 {
-	HRESULT        hResult = E_FAIL;
-	IObjectSafety *pIObjectSafety = NULL;
-	LPOLESTR CLSID_ForKB_AsWide, ProgIdAsWide;
-
-	bool HaveIObjectSaftey = false;
-	bool IDispatchEx_SafeForScripting = false;
-	bool IDispatch_SafeForScripting = false;
-	bool IPersist_SafeForUntrustedData = false;
-	int  KillBit;
-
-	if (ProgIDFromCLSID(*clsid, &ProgIdAsWide) == S_OK)
-	{
-		WriteText(hLogFile, "ProgId is : %ws\r\n", ProgIdAsWide);
-		CoTaskMemFree(ProgIdAsWide);
-	}
-
-
-	if (StringFromCLSID(*clsid, &CLSID_ForKB_AsWide) == S_OK)
-	{
-		KillBit = GetKillBit(CLSID_ForKB_AsWide);
-		CoTaskMemFree(CLSID_ForKB_AsWide);
-		if (KillBit == 1)
-		{
-			WriteText(hLogFile, "Kill Bit : true\r\n");
-		}
-	}
-
-	try
-	{
-
-		hResult = CoCreateInstance(*clsid, NULL, CLSCTX_LOCAL_SERVER | CLSCTX_INPROC_SERVER,
-			IID_IObjectSafety, (void**)&pIObjectSafety);
-	}
-	catch (...)
-	{
-		pIObjectSafety = NULL;
-	}
-	if ((hResult == S_OK) && (pIObjectSafety != NULL))
-	{
-		HaveIObjectSaftey = true;
-		try
-		{
-			hResult = pIObjectSafety->SetInterfaceSafetyOptions(IID_IDispatchEx,
-				INTERFACESAFE_FOR_UNTRUSTED_CALLER, INTERFACESAFE_FOR_UNTRUSTED_CALLER);
-			if (hResult == S_OK) IDispatchEx_SafeForScripting = true;
-
-			hResult = pIObjectSafety->SetInterfaceSafetyOptions(IID_IDispatch,
-				INTERFACESAFE_FOR_UNTRUSTED_CALLER, INTERFACESAFE_FOR_UNTRUSTED_CALLER);
-			if (hResult == S_OK)IDispatch_SafeForScripting = true;
-			hResult = pIObjectSafety->SetInterfaceSafetyOptions(IID_IPersistPropertyBag,
-				INTERFACESAFE_FOR_UNTRUSTED_DATA, INTERFACESAFE_FOR_UNTRUSTED_DATA);
-
-			if (hResult == S_OK) IPersist_SafeForUntrustedData = true;
-
-		}
-		catch (...)
-		{
-			pIObjectSafety->Release();
-			return(COM_OBJECTSAFETY_SET_INTERFACE_OPT_FAULT);
-		}
-
-		WriteText(hLogFile, "IDispatchEx SafeForScripting : %s\r\n", IDispatchEx_SafeForScripting ? "true" : "false");
-		WriteText(hLogFile, "IDispatch SafeForScripting   : %s\r\n", IDispatch_SafeForScripting ? "true" : "false");
-		WriteText(hLogFile, "IPersist SafeForUntrustedData: %s\r\n", IPersist_SafeForUntrustedData ? "true" : "false");
-
-		pIObjectSafety->Release();
-	}
-	else
-	{
-		WriteText(hLogFile, "IObjectSafety not implemented\r\n");
-	}
-
-	LPOLESTR CLSID_String_Wide;
-	LONG     RetValue;
-	HKEY     hKeyQ;
-	TCHAR    RegKey[1024];
-	bool     RegistryEntrySafeForScripting = false;
-	bool     RegistryEntrySafeForInitializingPersistentData = false;
-
-	hResult = StringFromCLSID(*clsid, &CLSID_String_Wide);
-	if (FAILED(hResult))
-	{
-		return(STRING_FROM_CLSID_FAILED);
-	}
-
-	sprintf(RegKey, "Software\\Classes\\CLSID\\%ws\\Implemented Categories\\{7DD95801-9882-11CF-9FA9-00AA006C42C4}", CLSID_String_Wide);
-	RetValue = RegOpenKeyEx(HKEY_LOCAL_MACHINE, RegKey, 0, KEY_QUERY_VALUE, &hKeyQ);
-	RegCloseKey(hKeyQ);
-	if (RetValue == ERROR_SUCCESS) RegistryEntrySafeForScripting = true;
-
-
-	sprintf(RegKey, "Software\\Classes\\CLSID\\%ws\\Implemented Categories\\{7DD95802-9882-11CF-9FA9-00AA006C42C4}", CLSID_String_Wide);
-	RetValue = RegOpenKeyEx(HKEY_LOCAL_MACHINE, RegKey, 0, KEY_QUERY_VALUE, &hKeyQ);
-	RegCloseKey(hKeyQ);
-	if (RetValue == ERROR_SUCCESS) RegistryEntrySafeForInitializingPersistentData = true;
-
-	CoTaskMemFree(CLSID_String_Wide);
-
-
-
-	WriteText(hLogFile, "Registry entry safe for scripting: %s\r\n", RegistryEntrySafeForScripting ? "true" : "false");
-	WriteText(hLogFile, "Registry entry safe for initializing persistent data: %s\r\n", RegistryEntrySafeForInitializingPersistentData ? "true" : "false");
-	if (HaveIObjectSaftey)
-	{
-		if ((IDispatchEx_SafeForScripting) || (IDispatch_SafeForScripting))
-		{
-			WriteText(hLogFile, "Object safe for scripting: true\r\n");
-		}
-		else
-		{
-			WriteText(hLogFile, "Object safe for scripting: false\r\n");
-		}
-		WriteText(hLogFile, "Object safe for init: %s\r\n", IPersist_SafeForUntrustedData ? "true" : "false");
-	}
-	else
-	{
-		WriteText(hLogFile, "Object safe for scripting: %s\r\n", RegistryEntrySafeForScripting ? "true" : "false");
-		WriteText(hLogFile, "Object safe for init: %s\r\n", RegistryEntrySafeForInitializingPersistentData ? "true" : "false");
-	}
-
-	return(SUCCESS);
+	va_list va;
+	va_start(va, Format);
+	const auto str = FormatV(Format, va);
+	va_end(va);
+	Log(str);
+	Log("\n");
 }
 
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// int PrintInterfaceInfo(IDispatch *pIDispatch)                                     //
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static int PrintInterfaceInfo(IDispatch *pIDispatch)
+void LogError(_Printf_format_string_ PCSTR Format, ...)
 {
-	HRESULT hResult;
-
-	ITypeInfo        * pTypeInfo;
-	TYPEATTR         * pTypeAttr;
-	BSTR               InterfaceName;
-	char             * MethodInformation;
-	char             * PropertyType;
-
-	MethodInformation = new char[2048];
-	MethodInformation[0] = NULL;
-
-	if (pIDispatch->GetTypeInfo(0, 0, &pTypeInfo) != S_OK)
-	{
-		delete[] MethodInformation;
-		return (GET_TYPE_INFO_FAILED);
-	}
-
-	pTypeInfo->GetTypeAttr(&pTypeAttr);
-
-	if (pTypeInfo->GetDocumentation(-1, &InterfaceName, 0, 0, 0) != S_OK)
-	{
-		WriteText(hLogFile, "Unknown default interface:\r\n");
-	}
-	else
-	{
-		WriteText(hLogFile, "%ws:\r\n", InterfaceName);
-	}
-	for (INT CurrrentFunction = 0; CurrrentFunction < pTypeAttr->cFuncs; CurrrentFunction++)
-	{
-		FUNCDESC* FunctionDescription;
-		hResult = pTypeInfo->GetFuncDesc(CurrrentFunction, &FunctionDescription);
-		if (!(FunctionDescription->wFuncFlags & FUNCFLAG_FRESTRICTED))
-		{
-			BSTR     methodName;
-			string_m tempstr;
-			hResult |= pTypeInfo->GetDocumentation(FunctionDescription->memid, &methodName, 0, 0, 0);
-			if (hResult)
-			{
-				WriteText(hLogFile, "Error In Name\r\n");
-				pTypeInfo->ReleaseFuncDesc(FunctionDescription);
-				continue;
-			}
-			switch (FunctionDescription->invkind)
-			{
-			case INVOKE_FUNC:          PropertyType = "Method                 "; break;
-			case INVOKE_PROPERTYGET:   PropertyType = "Property Get           "; break;
-			case INVOKE_PROPERTYPUT:   PropertyType = "Property Put           "; break;
-			case INVOKE_PROPERTYPUTREF:PropertyType = "Property Put Reference "; break;
-			default: PropertyType = ""; break;
-			}
-
-			tempstr = TypeDescriptionToString(&FunctionDescription->elemdescFunc.tdesc, pTypeInfo);
-			if (tempstr)
-			{
-				sprintf(MethodInformation, "\t%s%s %ws(", PropertyType, getstrptr_m(tempstr), methodName);
-				strdelete_m(&tempstr);
-			}
-			if (FunctionDescription->cParams > 0)
-			{
-				BSTR* rgBstrNames = new BSTR[FunctionDescription->cParams + 1];
-				UINT NumrgBstrNames = 0;
-				pTypeInfo->GetNames(FunctionDescription->memid, rgBstrNames, FunctionDescription->cParams + 1, &NumrgBstrNames);
-				if (NumrgBstrNames > 0) SysFreeString(rgBstrNames[0]);
-				for (INT CurrentParameter = 0; CurrentParameter < FunctionDescription->cParams; CurrentParameter++)
-				{
-					if (FunctionDescription->lprgelemdescParam[CurrentParameter].paramdesc.wParamFlags != 0)
-					{
-						bool NeedComma = false;
-						strcat(MethodInformation, "[");
-						if (FunctionDescription->lprgelemdescParam[CurrentParameter].paramdesc.wParamFlags & PARAMFLAG_FIN)
-						{
-							strcat(MethodInformation, "in");
-							NeedComma = true;
-						}
-						if (FunctionDescription->lprgelemdescParam[CurrentParameter].paramdesc.wParamFlags & PARAMFLAG_FOUT)
-						{
-							if (NeedComma) strcat(MethodInformation, ", ");
-							strcat(MethodInformation, "out");
-							NeedComma = true;
-						}
-						if (FunctionDescription->lprgelemdescParam[CurrentParameter].paramdesc.wParamFlags & PARAMFLAG_FRETVAL)
-						{
-							if (NeedComma) strcat(MethodInformation, ", ");
-							strcat(MethodInformation, "retval");
-							NeedComma = true;
-						}
-						if (FunctionDescription->lprgelemdescParam[CurrentParameter].paramdesc.wParamFlags & PARAMFLAG_FOPT)
-						{
-							if (NeedComma) strcat(MethodInformation, ", ");
-							strcat(MethodInformation, "optional");
-						}
-						strcat(MethodInformation, "] ");
-					}
-					tempstr = TypeDescriptionToString(&FunctionDescription->lprgelemdescParam[CurrentParameter].tdesc, pTypeInfo);
-					if (tempstr)
-					{
-						strcat(MethodInformation, getstrptr_m(tempstr));
-						strdelete_m(&tempstr);
-					}
-					if ((CurrentParameter + 1) < (INT)NumrgBstrNames)
-					{
-						char *TempArgStr = new char[2048];
-						sprintf(TempArgStr, " %ws", rgBstrNames[CurrentParameter + 1]);
-						strcat(MethodInformation, TempArgStr);
-						SysFreeString(rgBstrNames[CurrentParameter + 1]);
-						delete[] TempArgStr;
-					}
-					if (CurrentParameter < FunctionDescription->cParams - 1)  strcat(MethodInformation, ", ");
-
-				}
-				delete[] rgBstrNames;
-			}
-			strcat(MethodInformation, ")");
-			WriteText(hLogFile, "%s\r\n", MethodInformation);
-			pTypeInfo->ReleaseFuncDesc(FunctionDescription);
-		}
-	}
-	if (InterfaceName)
-	{
-		::SysFreeString(InterfaceName);
-	}
-
-	pTypeInfo->ReleaseTypeAttr(pTypeAttr);
-	delete[] MethodInformation;
-	return(SUCCESS);
+	va_list va;
+	va_start(va, Format);
+	const auto str = FormatV(Format, va);
+	va_end(va);
+	Log("ERROR: ");
+	Log(str);
+	Log("\n");
 }
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// int SetArgument(VARIANTARG *arg,BSTR BigString)                                   //
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static int SetArgument(VARIANTARG *arg, BSTR BigString)
+
+std::string VariantToString(const VARIANT &var, bool includeVT /*= true*/,
+	size_t maxValueLength /*= 0*/)
 {
-	switch (arg->vt)
-	{
-	case VT_BSTR:
-		arg->bstrVal = BigString;
-		return(0);
-	case VT_PTR:
-		arg->vt = VT_BSTR;
-		arg->bstrVal = BigString;
-		return(0);
-	case VT_I1:
-		arg->cVal = -1;
-		return(0);
-	case VT_I2:
-		arg->iVal = -1;
-		return(0);
-	case VT_I4:
-		arg->lVal = -1;
-		return(0);
-	case VT_I8:
-		arg->llVal = -1;
-		return(0);
-	case VT_UI1:
-		arg->bVal = 0xFF;
-		return(0);
-	case VT_UI2:
-		arg->uiVal = 0xFFFF;
-		return(0);
-	case VT_UI4:
-		arg->ulVal = 0xFFFFFFFF;
-		return(0);
-	case VT_UI8:
-		arg->ullVal = 0xFFFFFFFFFFFFFFFF;
-		return(0);
-	case VT_R4:
-		arg->fltVal = 0.0;
-		return(0);
-	case VT_R8:
-		arg->dblVal = 0.0;
-		return(0);
-	case VT_BOOL:
-		arg->boolVal = 10000;
-		return(0);
-	case (VT_BYREF | VT_BSTR):
-		arg->pbstrVal = NULL;
-		return(1);
-	case (VT_BYREF | VT_I1):
-		arg->pcVal = NULL;
-		return(1);
-	case (VT_BYREF | VT_I2):
-		arg->piVal = NULL;
-		return(1);
-	case (VT_BYREF | VT_I4):
-		arg->plVal = NULL;
-		return(1);
-	case (VT_BYREF | VT_I8):
-		arg->pllVal = NULL;
-		return(1);
-	case (VT_BYREF | VT_UI1):
-		arg->pbVal = NULL;
-		return(1);
-	case (VT_BYREF | VT_UI2):
-		arg->puiVal = NULL;
-		return(1);
-	case (VT_BYREF | VT_UI4):
-		arg->pulVal = NULL;
-		return(1);
-	case (VT_BYREF | VT_UI8):
-		arg->pullVal = NULL;
-		return(1);
-	case (VT_BYREF | VT_R4):
-		arg->pfltVal = NULL;
-		return(1);
-	case (VT_BYREF | VT_R8):
-		arg->pdblVal = NULL;
-		return(1);
-	case (VT_BYREF | VT_BOOL):
-		arg->pboolVal = NULL;
-		return(1);
-	case (VT_BYREF | VT_DECIMAL):
-		arg->pdecVal = NULL;
-		return(1);
-	case (VT_BYREF):
-		arg->byref = NULL;
-		return(1);
-	case  VT_UNKNOWN:
-		arg->punkVal = NULL;
-		return(1);
-	case  VT_DISPATCH:
-		arg->pdispVal = NULL;
-		return(1);
-	case  VT_ARRAY:
-		arg->parray = NULL;
-		return(1);
-	case  VT_DATE:
-		arg->date = -9999999999999999999999.99999999;
-		return(0);
-	case  (VT_BYREF | VT_UNKNOWN):
-		arg->ppunkVal = NULL;
-		return(1);
-	case  (VT_BYREF | VT_DISPATCH):
-		arg->ppdispVal = NULL;
-		return(1);
-	case  (VT_BYREF | VT_ARRAY):
-		arg->pparray = NULL;
-		return(1);
-	case  (VT_BYREF | VT_VARIANT):
-		arg->pvarVal = NULL;
-		return(1);
-	default:
-		return(1);
-	}
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static const char * GetArgumentStringEquivalent(USHORT vt)                              //
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static const char * GetArgumentStringEquivalent(USHORT vt)
-{
+	const auto vt = (var.vt & ~VT_BYREF);
+	const auto isref = (var.vt & VT_BYREF) == VT_BYREF;
+	auto isptr = isref;
+	PCSTR type = nullptr;
+	PCWSTR value = nullptr;
+
+#undef CASE_VT
+#define CASE_VT(vt)                                                            \
+  case vt:                                                                     \
+    type = (isref ? #vt "|VT_BYREF:" : #vt ":")
 	switch (vt)
 	{
-	case VT_BSTR:
-	case VT_PTR:
-		return(PropAndMethodDispString);
-	case VT_I1:
-	case VT_I2:
-	case VT_I4:
-	case VT_I8:
-		return("<-1>");
-	case VT_UI1:
-		return("<0xFF>");
-	case VT_UI2:
-		return("<0xFFFF>");
-	case VT_UI4:
-		return("<0xFFFFFFFF>");
-	case VT_UI8:
-		return("<0xFFFFFFFFFFFFFFFF>");
-	case VT_R4:
-	case VT_R8:
-		return("<0.0>");
-	case VT_BOOL:
-		return("<10000>");
-	case (VT_BYREF | VT_BSTR):
-	case (VT_BYREF | VT_I1):
-	case (VT_BYREF | VT_I2):
-	case (VT_BYREF | VT_I4):
-	case (VT_BYREF | VT_I8):
-	case (VT_BYREF | VT_UI1):
-	case (VT_BYREF | VT_UI2):
-	case (VT_BYREF | VT_UI4):
-	case (VT_BYREF | VT_UI8):
-	case (VT_BYREF | VT_R4):
-	case (VT_BYREF | VT_R8):
-	case (VT_BYREF | VT_BOOL):
-	case (VT_BYREF | VT_DECIMAL):
-	case (VT_BYREF):
-	case  VT_UNKNOWN:
-	case  VT_DISPATCH:
-	case  VT_ARRAY:
-		return("<NULL>");
-	case  VT_DATE:
-		return("<-9999999999999999999999.99999999>");
-	case  (VT_BYREF | VT_UNKNOWN):
-	case  (VT_BYREF | VT_DISPATCH):
-	case  (VT_BYREF | VT_ARRAY):
-	case  (VT_BYREF | VT_VARIANT):
-		return("<NULL>");
+		CASE_VT(VT_I1);
+		break;
+		CASE_VT(VT_I2);
+		break;
+		CASE_VT(VT_I4);
+		break;
+		CASE_VT(VT_I8);
+		break;
+		CASE_VT(VT_R4);
+		break;
+		CASE_VT(VT_R8);
+		break;
+		CASE_VT(VT_CY);
+		break;
+		CASE_VT(VT_DATE);
+		break;
+		CASE_VT(VT_BSTR);
+		break;
+		CASE_VT(VT_ERROR);
+		break;
+		CASE_VT(VT_BOOL);
+		break;
+		CASE_VT(VT_DECIMAL);
+		break;
+		CASE_VT(VT_UI1);
+		break;
+		CASE_VT(VT_UI2);
+		break;
+		CASE_VT(VT_UI4);
+		break;
+		CASE_VT(VT_UI8);
+		break;
+		CASE_VT(VT_INT);
+		break;
+		CASE_VT(VT_UINT);
+		break;
+		CASE_VT(VT_VARIANT);
+		break;
+		CASE_VT(VT_UNKNOWN);
+		value = L"{...}";
+		isptr = true;
+		break;
+		CASE_VT(VT_DISPATCH);
+		value = L"{...}";
+		isptr = true;
+		break;
+		CASE_VT(VT_ARRAY);
+		value = L"[...]";
+		isptr = true;
+		break;
+		CASE_VT(VT_RECORD);
+		value = L"{...}";
+		isptr = true;
+		break;
+		CASE_VT(VT_NULL);
+		value = includeVT ? L"" : L"Null";
+		break;
+		CASE_VT(VT_EMPTY);
+		value = includeVT ? L"" : L"empty";
+		break;
 	default:
-		return("<*Unknown-Type-Not Set*>");
-	}
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static string_m CustomTypeToString(HREFTYPE refType, ITypeInfo* pTypeInfo)        //
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static string_m CustomTypeToString(HREFTYPE refType, ITypeInfo* pTypeInfo)
-{
-	ITypeInfo *pCustTypeInfo;
-	string_m   ReturnValue = NULL;
-	char       TempString[MAX_PATH];
-	BSTR       pBstrName;
-
-	HRESULT hr = (pTypeInfo->GetRefTypeInfo(refType, &pCustTypeInfo));
-	if (hr)
-	{
-		if (strcreate_m(&ReturnValue, "UnknownCustomType", 0, NULL)) return(NULL);
-		return (ReturnValue);
-	}
-	hr = pCustTypeInfo->GetDocumentation(-1, &pBstrName, 0, 0, 0);
-	if (hr)
-	{
-		if (strcreate_m(&ReturnValue, "UnknownCustomType", 0, NULL)) return(NULL);
-		pCustTypeInfo->Release();
-		return (ReturnValue);
+		return "<UNEXPECTED>";
 	}
 
-	WideCharToMultiByte(CP_ACP, 0, pBstrName, -1, TempString, MAX_PATH, 0, 0);
-	if (pBstrName) ::SysFreeString(pBstrName);
-	pCustTypeInfo->Release();
-	if (strcreate_m(&ReturnValue, TempString, 0, NULL)) return(NULL);
-	return (ReturnValue);
+	if (isptr && var.byref == nullptr)
+		value = L"null";
+
+	_bstr_t converted;
+	if (!value)
+	{
+		// try to convert to a bstr
+		try
+		{
+			value = converted = var;
+		}
+		catch (...)
+		{
+		}
+		if (!value)
+			value = L"<???>";
+	}
+
+	const auto format = (vt == VT_BSTR ? "%s\"%.*ls%s\"" : "%s%.*ls%s");
+	const auto prefix = (includeVT ? type : "");
+	auto precision = -1; // all
+	auto suffix = "";
+	if (0 < maxValueLength && maxValueLength < wcslen(value))
+	{
+		precision = (maxValueLength <= 3 ? 1 : maxValueLength - 3);
+		suffix = "...";
+	}
+	return Format(format, prefix, precision, value, suffix);
 }
 
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static string_m TypeDescriptionToString(TYPEDESC* typeDesc, ITypeInfo* pTypeInfo) //
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static string_m TypeDescriptionToString(TYPEDESC* typeDesc, ITypeInfo* pTypeInfo)
+void GenerateArgument(_In_ ITypeInfo *pTypeInfo, const TYPEDESC &tdesc,
+	_Inout_ VARIANT &arg,
+	_Inout_opt_ VARIANT *refValue = nullptr)
 {
-	string_m   ReturnString;
+	::VariantClear(&arg);
+	if (refValue)
+		::VariantClear(refValue);
 
-	if (strcreate_m(&ReturnString, NULL, 0, NULL)) return(NULL);
-
-	if (typeDesc->vt == VT_PTR)
+	if (tdesc.vt == VT_PTR)
 	{
-		string_m tempstr = TypeDescriptionToString(typeDesc->lptdesc, pTypeInfo);
-		if (tempstr)
+		if (refValue)
 		{
-			strcat_m(ReturnString, tempstr);
-			strdelete_m(&tempstr);
+			// Make a value reference...
+			GenerateArgument(pTypeInfo, *tdesc.lptdesc, *refValue);
+			arg.vt = VT_BYREF | refValue->vt;
+			arg.byref = refValue->vt == VT_DECIMAL ? (void *)&refValue->decVal
+				: (void *)&refValue->lVal;
 		}
-		cstrcat_m(ReturnString, "*");
-		return ReturnString;
-	}
-	if (typeDesc->vt == VT_SAFEARRAY)
-	{
-		string_m tempstr = TypeDescriptionToString(typeDesc->lptdesc, pTypeInfo);
-		cstrcat_m(ReturnString, "SAFEARRAY(");
-		if (tempstr)
+		else
 		{
-			strcat_m(ReturnString, tempstr);
-			strdelete_m(&tempstr);
+			// Make a null reference...
+			// Call GenerateArgument() to get the correct type.
+			_variant_t dummy;
+			GenerateArgument(pTypeInfo, *tdesc.lptdesc, dummy);
+			arg.vt = VT_BYREF | dummy.vt;
+			arg.byref = nullptr; // do not ref dummy
 		}
-		cstrcat_m(ReturnString, ")");
-		return ReturnString;
-	}
-	if (typeDesc->vt == VT_CARRAY)
-	{
-
-
-		string_m tempstr = TypeDescriptionToString(&typeDesc->lpadesc->tdescElem, pTypeInfo);
-		if (tempstr)
-		{
-			strcat_m(ReturnString, tempstr);
-			strdelete_m(&tempstr);
-		}
-
-		for (int dim = 0; typeDesc->lpadesc->cDims; dim++)
-		{
-			char tempbuffer[256];
-
-			cstrcat_m(ReturnString, "[");
-			sprintf(tempbuffer, "%d", typeDesc->lpadesc->rgbounds[dim].lLbound);
-			cstrcat_m(ReturnString, tempbuffer);
-			cstrcat_m(ReturnString, "...");
-			sprintf(tempbuffer, "%d", typeDesc->lpadesc->rgbounds[dim].cElements +
-				typeDesc->lpadesc->rgbounds[dim].lLbound - 1);
-			cstrcat_m(ReturnString, tempbuffer);
-			cstrcat_m(ReturnString, "]");
-		}
-		return ReturnString;
-	}
-	if (typeDesc->vt == VT_USERDEFINED)
-	{
-		string_m tempstr = CustomTypeToString(typeDesc->hreftype, pTypeInfo);
-		if (tempstr)
-		{
-			strcat_m(ReturnString, tempstr);
-			strdelete_m(&tempstr);
-		}
-		return ReturnString;
+		return;
 	}
 
+	// Init to a (potentially) invalid value...
+	arg.vt = tdesc.vt;
+	switch (tdesc.vt)
+	{
+	case VT_I1:
+		arg.cVal = -1;
+		break;
+	case VT_I2:
+		arg.iVal = -1;
+		break;
+	case VT_I4:
+		arg.lVal = -1L;
+		break;
+	case VT_I8:
+		arg.llVal = -1LL;
+		break;
+	case VT_R4:
+		arg.fltVal = NAN;
+		break;
+	case VT_R8:
+		arg.dblVal = NAN;
+		break;
+	case VT_CY:
+		arg.cyVal.int64 = -1LL;
+		break;
+	case VT_DATE:
+		arg.date = -9999999999999999999999.99999999;
+		break;
+	case VT_HRESULT: //[[fallthrough]]
+	case VT_ERROR:
+		arg.scode = static_cast<HRESULT>(-1L);
+		break;
+	case VT_BOOL:
+		arg.boolVal = 10000;
+		break;
+	case VT_DECIMAL:
+		arg.decVal.Lo64 = ~0ULL;
+		arg.decVal.Hi32 = ~0UL;
+		arg.decVal.sign = DECIMAL_NEG;
+		arg.decVal.scale = 0;
+		break; // MIN_DECIMAL
+	case VT_UI1:
+		arg.bVal = 0xFF;
+		break;
+	case VT_UI2:
+		arg.uiVal = 0xFFFF;
+		break;
+	case VT_UI4:
+		arg.ulVal = ~0UL;
+		break;
+	case VT_UI8:
+		arg.ullVal = ~0ULL;
+		break;
+	case VT_INT:
+		arg.intVal = -1;
+		break;
+	case VT_UINT:
+		arg.uintVal = ~0U;
+		break;
+	case VT_VARIANT:
+		arg.pvarVal = nullptr;
+		break;
+	case VT_DISPATCH:
+		arg.pdispVal = nullptr;
+		break;
+	case VT_UNKNOWN:
+		arg.punkVal = nullptr;
+		break;
+	case VT_BSTR:
+	{
+		// create a long BSTR
+		constexpr auto kBstrChar = 'x';
+		constexpr auto kBstrLen = 1024 * 10 - 1;
+		arg.bstrVal = ::SysAllocStringLen(nullptr, kBstrLen);
+		if (!arg.bstrVal)
+			throw std::bad_alloc();
+		wmemset(arg.bstrVal, kBstrChar, kBstrLen);
+		break;
+	}
+	case VT_SAFEARRAY:
+	{
+		// create empty SAFEARRAY
+		std::vector<SAFEARRAYBOUND> bounds(tdesc.lpadesc->rgbounds,
+			tdesc.lpadesc->rgbounds +
+			tdesc.lpadesc->cDims);
+		for (auto &bound : bounds)
+			bound.cElements = 0;
+		arg.parray = ::SafeArrayCreate(tdesc.lpadesc->tdescElem.vt, bounds.size(),
+			bounds.data());
+		arg.vt = VT_ARRAY;
+		break;
+	}
+	case VT_USERDEFINED:
+	{
+		// assume it is an enumeration value
+		arg.vt = VT_I4;
+		arg.lVal = 0;
+		break;
+	}
+
+	// The remainder are not supported by variant
+	case VT_VOID:     //[[fallthrough]]
+	case VT_CARRAY:   //[[fallthrough]]
+	case VT_INT_PTR:  //[[fallthrough]]
+	case VT_UINT_PTR: //[[fallthrough]]
+	case VT_LPSTR:    //[[fallthrough]]
+	case VT_LPWSTR:
+		arg.vt = VT_NULL;
+		break;
+	default:
+		arg.vt = VT_EMPTY;
+		break;
+	}
+}
+
+std::string TypeDescriptionToString(_In_ const TYPEDESC *typeDesc,
+	_In_ ITypeInfo *pTypeInfo)
+{
 	switch (typeDesc->vt)
 	{
-	case VT_I2: cstrcat_m(ReturnString, "short"); break;
-	case VT_I4: cstrcat_m(ReturnString, "long"); break;
-	case VT_R4: cstrcat_m(ReturnString, "float"); break;
-	case VT_R8: cstrcat_m(ReturnString, "double"); break;
-	case VT_CY: cstrcat_m(ReturnString, "CY"); break;
-	case VT_DATE: cstrcat_m(ReturnString, "DATE"); break;
-	case VT_BSTR: cstrcat_m(ReturnString, "BSTR"); break;
-	case VT_DISPATCH: cstrcat_m(ReturnString, "IDispatch*"); break;
-	case VT_ERROR: cstrcat_m(ReturnString, "SCODE"); break;
-	case VT_BOOL: cstrcat_m(ReturnString, "VARIANT_BOOL"); break;
-	case VT_VARIANT: cstrcat_m(ReturnString, "VARIANT"); break;
-	case VT_UNKNOWN: cstrcat_m(ReturnString, "IUnknown*"); break;
-	case VT_UI1: cstrcat_m(ReturnString, "BYTE"); break;
-	case VT_DECIMAL: cstrcat_m(ReturnString, "DECIMAL"); break;
-	case VT_I1: cstrcat_m(ReturnString, "char"); break;
-	case VT_UI2: cstrcat_m(ReturnString, "USHORT"); break;
-	case VT_UI4: cstrcat_m(ReturnString, "ULONG"); break;
-	case VT_I8: cstrcat_m(ReturnString, "__int64"); break;
-	case VT_UI8: cstrcat_m(ReturnString, "unsigned __int64"); break;
-	case VT_INT: cstrcat_m(ReturnString, "int"); break;
-	case VT_UINT: cstrcat_m(ReturnString, "UINT"); break;
-	case VT_HRESULT: cstrcat_m(ReturnString, "HRESULT"); break;
-	case VT_VOID: cstrcat_m(ReturnString, "void"); break;
-	case VT_LPSTR: cstrcat_m(ReturnString, "char*"); break;
-	case VT_LPWSTR: cstrcat_m(ReturnString, "wchar_t*"); break;
-	default: cstrcat_m(ReturnString, "Error"); break;
-	}
-
-	return(ReturnString);
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static int Test_DispatchEx_Interface(IDispatchEx *pIDispatchEx,,DWORD level)      //
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static int Test_DispatchEx_Interface(IDispatchEx *pIDispatchEx, DWORD Level)
-{
-	return(Test_Dispatch_Interface(pIDispatchEx, Level));
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static int Test_Dispatch_Interface(IDispatch *pIDispatch,DWORD Level)             //
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static int Test_Dispatch_Interface(IDispatch *pIDispatch, DWORD Level)
-{
-	if (Level > MAXRECURSE) return(MAX_RECURSIVE_LEVEL_REACHED);
-
-	TestProperites(pIDispatch, Level);
-	TestMethods(pIDispatch, Level);
-	if ((Level == 0) && (COM_Object_Exeception_Occurred)) return(COM_OBJECT_EXECEPTION_OCCURRED);
-	else return(SUCCESS);
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static int TestProperites(IDispatch *pIDispatch, DWORD Level)                     //
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static int TestProperites(IDispatch *pIDispatch, DWORD Level)
-{
-	ITypeInfo * pTypeInfo;
-	HRESULT     hResult;
-	VARIANT   * pArguments = NULL;
-	TYPEATTR  * pTypeAttr;
-	BSTR        InterfaceName;
-	char      * MethodInformation;
-	BSTR        LargeTestString;
-	char      * PropertyType;
-
-	MethodInformation = new char[2048];
-	MethodInformation[0] = NULL;
-	LargeTestString = ::SysAllocStringLen(NULL, METHOD_AND_PROP_STRING_LENGTH - 1);
-	wmemset(LargeTestString, METHOD_AND_PROP_STRING_CHARACTER, METHOD_AND_PROP_STRING_LENGTH - 1);
-
-
-	if (pIDispatch->GetTypeInfo(0, 0, &pTypeInfo) != S_OK)
+	default:
+		return "<unknown>";
+	case VT_I1:
+		return "CHAR";
+	case VT_I2:
+		return "SHORT";
+	case VT_I4:
+		return "LONG";
+	case VT_I8:
+		return "LONGLONG";
+	case VT_R4:
+		return "FLOAT";
+	case VT_R8:
+		return "DOUBLE";
+	case VT_CY:
+		return "CY";
+	case VT_DATE:
+		return "DATE";
+	case VT_BSTR:
+		return "BSTR";
+	case VT_DISPATCH:
+		return "IDispatch*";
+	case VT_ERROR:
+		return "SCODE";
+	case VT_BOOL:
+		return "VARIANT_BOOL";
+	case VT_VARIANT:
+		return "VARIANT*";
+	case VT_UNKNOWN:
+		return "IUnknown*";
+	case VT_DECIMAL:
+		return "DECIMAL";
+	case VT_UI1:
+		return "BYTE";
+	case VT_UI2:
+		return "USHORT";
+	case VT_UI4:
+		return "ULONG";
+	case VT_UI8:
+		return "ULONGLONG";
+	case VT_INT:
+		return "INT";
+	case VT_INT_PTR:
+		return "INT*";
+	case VT_UINT:
+		return "UINT";
+	case VT_UINT_PTR:
+		return "UINT*";
+	case VT_VOID:
+		return "void";
+	case VT_HRESULT:
+		return "HRESULT";
+	case VT_LPSTR:
+		return "char*";
+	case VT_LPWSTR:
+		return "wchar_t*";
+	case VT_PTR:
+		return TypeDescriptionToString(typeDesc->lptdesc, pTypeInfo) + "*";
+	case VT_SAFEARRAY:
+		return "SAFEARRAY(" +
+			TypeDescriptionToString(typeDesc->lptdesc, pTypeInfo) + ")";
+	case VT_CARRAY:
 	{
-		::SysFreeString(LargeTestString);
-		delete[] MethodInformation;
-		return (GET_TYPE_INFO_FAILED);
-	}
-
-
-	pTypeInfo->GetTypeAttr(&pTypeAttr);
-
-
-	if (pTypeInfo->GetDocumentation(-1, &InterfaceName, 0, 0, 0) != S_OK)
-	{
-		WriteText(hLogFile, "Unknown default interface:\r\n");
-	}
-
-
-	for (UINT CurrrentFunction = 0; CurrrentFunction < pTypeAttr->cFuncs; CurrrentFunction++)
-	{
-		FUNCDESC* FunctionDescription;
-		hResult = pTypeInfo->GetFuncDesc(CurrrentFunction, &FunctionDescription);
-		if (hResult != S_OK)
+		std::stringstream stm;
+		stm << TypeDescriptionToString(&typeDesc->lpadesc->tdescElem, pTypeInfo);
+		for (auto dim = 0u; typeDesc->lpadesc->cDims; ++dim)
 		{
-			if (hResult == E_OUTOFMEMORY) WriteText(hLogFile, "GetFuncDesc Failed (E_OUTOFMEMORY)\r\n");
-			else if (hResult == E_INVALIDARG)  WriteText(hLogFile, "GetFuncDesc Failed (E_INVALIDARG)\r\n");
-			else WriteText(hLogFile, "GetFuncDesc Failed (0x%x)\r\n", hResult);
-			continue;
+			stm << "[";
+			if (typeDesc->lpadesc->rgbounds[dim].lLbound != 0)
+				stm << typeDesc->lpadesc->rgbounds[dim].lLbound << "+";
+			stm << typeDesc->lpadesc->rgbounds[dim].cElements << "]";
 		}
-		if (!(FunctionDescription->wFuncFlags & FUNCFLAG_FRESTRICTED))
-		{
-			BSTR MethodName;
-			string_m tempstr;
-			hResult |= pTypeInfo->GetDocumentation(FunctionDescription->memid, &MethodName, 0, 0, 0);
-			if (hResult != S_OK)
-			{
-				WriteText(hLogFile, "Error In Method Name\r\n");
-				pTypeInfo->ReleaseFuncDesc(FunctionDescription);
-				continue;
-			}
-			switch (FunctionDescription->invkind)
-			{
-			case INVOKE_PROPERTYGET:   PropertyType = "Property Get          "; break;
-			case INVOKE_PROPERTYPUT:   PropertyType = "Property Put          "; break;
-			case INVOKE_PROPERTYPUTREF:PropertyType = "Property Put Reference"; break;
-			default:PropertyType = "<Unknown Property Type>"; break;
-			}
-			tempstr = TypeDescriptionToString(&FunctionDescription->elemdescFunc.tdesc, pTypeInfo);
-			if (tempstr)
-			{
-				sprintf(MethodInformation, "%s %ws(", getstrptr_m(tempstr), MethodName);
-				strdelete_m(&tempstr);
-			}
-			if (MethodName) ::SysFreeString(MethodName);
-			if (FunctionDescription->cParams > 0)
-			{
-				BSTR* rgBstrNames = new BSTR[FunctionDescription->cParams + 1];
-				UINT NumrgBstrNames = 0;
-				pTypeInfo->GetNames(FunctionDescription->memid, rgBstrNames, FunctionDescription->cParams + 1, &NumrgBstrNames);
-				if (NumrgBstrNames > 0) SysFreeString(rgBstrNames[0]);
-
-				for (INT CurrentParameter = 0; CurrentParameter < FunctionDescription->cParams; CurrentParameter++)
-				{
-					if (FunctionDescription->lprgelemdescParam[CurrentParameter].paramdesc.wParamFlags != 0)
-					{
-						bool NeedComma = false;
-						strcat(MethodInformation, "[");
-						if (FunctionDescription->lprgelemdescParam[CurrentParameter].paramdesc.wParamFlags & PARAMFLAG_FIN)
-						{
-							strcat(MethodInformation, "in");
-							NeedComma = true;
-						}
-						if (FunctionDescription->lprgelemdescParam[CurrentParameter].paramdesc.wParamFlags & PARAMFLAG_FOUT)
-						{
-							if (NeedComma) strcat(MethodInformation, ", ");
-							strcat(MethodInformation, "out");
-							NeedComma = true;
-						}
-						if (FunctionDescription->lprgelemdescParam[CurrentParameter].paramdesc.wParamFlags & PARAMFLAG_FRETVAL)
-						{
-							if (NeedComma) strcat(MethodInformation, ", ");
-							strcat(MethodInformation, "retval");
-							NeedComma = true;
-						}
-						if (FunctionDescription->lprgelemdescParam[CurrentParameter].paramdesc.wParamFlags & PARAMFLAG_FOPT)
-						{
-							if (NeedComma) strcat(MethodInformation, ", ");
-							strcat(MethodInformation, "optional");
-						}
-						strcat(MethodInformation, "] ");
-					}
-
-					tempstr = TypeDescriptionToString(&FunctionDescription->lprgelemdescParam[CurrentParameter].tdesc, pTypeInfo);
-					if (tempstr)
-					{
-						strcat(MethodInformation, getstrptr_m(tempstr));
-						strdelete_m(&tempstr);
-					}
-					if ((CurrentParameter + 1) < (INT)NumrgBstrNames)
-					{
-						char *TempArgStr = new char[2048];
-						sprintf(TempArgStr, " %ws", rgBstrNames[CurrentParameter + 1]);
-						strcat(MethodInformation, TempArgStr);
-						SysFreeString(rgBstrNames[CurrentParameter + 1]);
-						delete[] TempArgStr;
-					}
-					strcat(MethodInformation, GetArgumentStringEquivalent(FunctionDescription->lprgelemdescParam[CurrentParameter].tdesc.vt));
-					if (CurrentParameter < FunctionDescription->cParams - 1)  strcat(MethodInformation, ", ");
-				}
-				delete[] rgBstrNames;
-			}
-			strcat(MethodInformation, ")");
-
-			if (FunctionDescription->invkind == INVOKE_PROPERTYGET)
-			{
-				int HasPointers = 0;
-				DISPPARAMS Parameters;
-
-				memset(&Parameters, 0, sizeof(Parameters));
-
-				Parameters.cArgs = FunctionDescription->cParams;
-				Parameters.cNamedArgs = 0;
-				Parameters.rgvarg = NULL;
-
-				if (Parameters.cArgs > 0)
-				{
-					pArguments = new VARIANT[Parameters.cArgs];
-
-					Parameters.rgvarg = pArguments;
-					memset(pArguments, 0, sizeof(VARIANT) * Parameters.cArgs);
-					for (unsigned int i = 0; i < Parameters.cArgs; i++)
-					{
-						VariantInit(&pArguments[i]);
-						pArguments[i].vt = FunctionDescription->lprgelemdescParam[i].tdesc.vt;
-						HasPointers |= SetArgument(&pArguments[i], LargeTestString);
-					}
-				}
-				if (!HasPointers)
-				{
-					VARIANT Result;
-					VariantInit(&Result);
-					Result.vt = VT_PTR;
-					Result.pdispVal = NULL;
-					UINT uArgErr;
-
-					WriteText(hLogFile, "Invoking %s - %ws::%s\r\n", PropertyType, InterfaceName, MethodInformation);
-
-					try {
-						pIDispatch->Invoke(FunctionDescription->memid, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &Parameters, &Result, NULL, &uArgErr);
-					}
-					catch (const access_violation& e)
-					{
-						COM_Object_Exeception_Occurred = true;
-						WriteText(hLogFile, "*****************************\r\n");
-						WriteText(hLogFile, "***   Access Violation    ***\r\n");
-						WriteText(hLogFile, "*****************************\r\n");
-						WriteText(hLogFile, "Invoked %s - %ws::%s\r\n", PropertyType, InterfaceName, MethodInformation);
-						WriteText(hLogFile, "%s at 0x%p :Bad %s on 0x%p\r\n",
-							e.what(), e.where(), e.isWrite() ? "write" : "read", e.badAddress());
-						WriteText(hLogFile, "*****************************\r\n");
-					}
-					catch (const win32_exception& e)
-					{
-						COM_Object_Exeception_Occurred = true;
-						WriteText(hLogFile, "*****************************\r\n");
-						WriteText(hLogFile, "***   Win32 Exception     ***\r\n");
-						WriteText(hLogFile, "*****************************\r\n");
-						WriteText(hLogFile, "Invoked %s - %ws::%s\r\n", PropertyType, InterfaceName, MethodInformation);
-						WriteText(hLogFile, "%s (code %x) at 0x%p\r\n",
-							e.what(), e.code(), e.where());
-						WriteText(hLogFile, "*****************************\r\n");
-					}
-
-					if (Result.vt == VT_PTR && !Result.pdispVal)
-					{
-#if LOGINFO
-						WriteText(hLogFile, "*****************************\r\n");
-						WriteText(hLogFile, "***      No Results       ***\r\n");
-						WriteText(hLogFile, "*****************************\r\n");
-						WriteText(hLogFile, "Invoked %s - %ws::%s\r\n", PropertyType, InterfaceName, MethodInformation);
-						WriteText(hLogFile, "*****************************\r\n");
-#endif
-					}
-					if (pArguments) delete[] pArguments;
-					pArguments = NULL;
-
-					if (Result.vt == VT_DISPATCH && Result.pdispVal)
-					{
-						if (pIDispatch != Result.pdispVal)
-						{
-							LARGE_INTEGER CurrentPos, Before, After, zero;
-							zero.QuadPart = 0;
-							if (!SetFilePointerEx(hLogFile, zero, &CurrentPos, FILE_CURRENT))
-							{
-								WriteText(hLogFile, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
-								WriteText(hLogFile, "Set File Pointer 1 Failed\r\n");
-								WriteText(hLogFile, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
-							}
-							WriteText(hLogFile, "Recurse from   interface %ws\r\n", InterfaceName);
-							if (!SetFilePointerEx(hLogFile, zero, &Before, FILE_CURRENT))
-							{
-								WriteText(hLogFile, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
-								WriteText(hLogFile, "Set File Pointer 2 Failed\r\n");
-								WriteText(hLogFile, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
-							}
-							Test_Dispatch_Interface(Result.pdispVal, Level + 1);
-							if (!SetFilePointerEx(hLogFile, zero, &After, FILE_CURRENT))
-							{
-								WriteText(hLogFile, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
-								WriteText(hLogFile, "Set File Pointer 3 Failed\r\n");
-								WriteText(hLogFile, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
-							}
-							if (Before.QuadPart == After.QuadPart)
-							{
-								if (!SetFilePointerEx(hLogFile, CurrentPos, NULL, FILE_BEGIN))
-								{
-									WriteText(hLogFile, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
-									WriteText(hLogFile, "Set File Pointer 4 Failed\r\n");
-									WriteText(hLogFile, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
-								}
-							}
-							else
-							{
-								WriteText(hLogFile, "Recurse return %ws\r\n", InterfaceName);
-							}
-
-						}
-					}
-					try
-					{
-						VariantClear(&Result);
-					}
-					catch (const access_violation& e)
-					{
-#if LOG_CRASH_ON_FREE
-						WriteText(hLogFile, "*****************************\r\n");
-						WriteText(hLogFile, "***   Access Violation    ***\r\n");
-						WriteText(hLogFile, "*****************************\r\n");
-						WriteText(hLogFile, "Invoked - VariantClear 1\r\n");
-						WriteText(hLogFile, "%s at 0x%p :Bad %s on 0x%p\r\n",
-							e.what(), e.where(), e.isWrite() ? "write" : "read", e.badAddress());
-						WriteText(hLogFile, "*****************************\r\n");
-
-#endif
-					}
-					catch (const win32_exception& e)
-					{
-#if LOG_CRASH_ON_FREE
-						WriteText(hLogFile, "*****************************\r\n");
-						WriteText(hLogFile, "***   Win32 Exception     ***\r\n");
-						WriteText(hLogFile, "*****************************\r\n");
-						WriteText(hLogFile, "Invoked - VariantClear 1\r\n");
-						WriteText(hLogFile, "%s (code %x) at 0x%p\r\n",
-							e.what(), e.code(), e.where());
-						WriteText(hLogFile, "*****************************\r\n");
-
-#endif
-					}
-				}
-			}
-			if (FunctionDescription->invkind == INVOKE_PROPERTYPUT)
-			{
-				int HasPointers = 0;
-				DISPPARAMS Parameters;
-				DISPID dispidPut = DISPID_PROPERTYPUT;
-				memset(&Parameters, 0, sizeof(Parameters));
-
-				Parameters.cArgs = FunctionDescription->cParams;
-				Parameters.cNamedArgs = 1;
-				Parameters.rgvarg = NULL;
-				Parameters.rgdispidNamedArgs = &dispidPut;
-
-				if (Parameters.cArgs > 0)
-				{
-					pArguments = new VARIANT[Parameters.cArgs];
-
-					Parameters.rgvarg = pArguments;
-					memset(pArguments, 0, sizeof(VARIANT) * Parameters.cArgs);
-
-					for (unsigned int i = 0; i < Parameters.cArgs; i++)
-					{
-						VariantInit(&pArguments[i]);
-						pArguments[i].vt = FunctionDescription->lprgelemdescParam[i].tdesc.vt;
-						HasPointers |= SetArgument(&pArguments[i], LargeTestString);
-					}
-				}
-				if (!HasPointers)
-				{
-
-					VARIANT Result;
-					VariantInit(&Result);
-					Result.vt = VT_BOOL;
-					Result.boolVal = VARIANT_FALSE;
-					UINT uArgErr;
-
-					WriteText(hLogFile, "Invoking %s - %ws::%s\r\n", PropertyType, InterfaceName, MethodInformation);
-
-					try
-					{
-						pIDispatch->Invoke(FunctionDescription->memid, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYPUT, &Parameters, &Result, NULL, &uArgErr);
-					}
-					catch (const access_violation& e)
-					{
-						COM_Object_Exeception_Occurred = true;
-						WriteText(hLogFile, "*****************************\r\n");
-						WriteText(hLogFile, "***   Access Violation    ***\r\n");
-						WriteText(hLogFile, "*****************************\r\n");
-						WriteText(hLogFile, "Invoked %s - %ws::%s\r\n", PropertyType, InterfaceName, MethodInformation);
-						WriteText(hLogFile, "%s at 0x%p :Bad %s on 0x%p\r\n",
-							e.what(), e.where(), e.isWrite() ? "write" : "read", e.badAddress());
-						WriteText(hLogFile, "*****************************\r\n");
-					}
-					catch (const win32_exception& e)
-					{
-						COM_Object_Exeception_Occurred = true;
-						WriteText(hLogFile, "*****************************\r\n");
-						WriteText(hLogFile, "***   Win32 Exception     ***\r\n");
-						WriteText(hLogFile, "*****************************\r\n");
-						WriteText(hLogFile, "Invoked %s - %ws::%s\r\n", PropertyType, InterfaceName, MethodInformation);
-						WriteText(hLogFile, "%s (code %x) at 0x%p\r\n",
-							e.what(), e.code(), e.where());
-						WriteText(hLogFile, "*****************************\r\n");
-
-					}
-					if (pArguments) delete[] pArguments;
-					pArguments = NULL;
-				}
-			}
-			pTypeInfo->ReleaseFuncDesc(FunctionDescription);
-		}
+		return stm.str();
 	}
-	if (InterfaceName)
+	case VT_USERDEFINED:
 	{
-		::SysFreeString(InterfaceName);
+		ITypeInfoPtr pCustTypeInfo;
+		if (FAILED(pTypeInfo->GetRefTypeInfo(typeDesc->hreftype, &pCustTypeInfo)))
+			return "UnknownCustomType";
+
+		_bstr_t typeName;
+		if (FAILED(pCustTypeInfo->GetDocumentation(
+			MEMBERID_NIL, typeName.GetAddress(), nullptr, nullptr, nullptr)))
+			return "UnknownCustomType";
+
+		return Narrow(typeName);
 	}
-	pTypeInfo->ReleaseTypeAttr(pTypeAttr);
-	pTypeInfo->Release();
-	::SysFreeString(LargeTestString);
-	delete[] MethodInformation;
-	return(SUCCESS);
+	}
 }
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static int TestMethods(IDispatch *pIDispatch, DWORD Level)                        //
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static int TestMethods(IDispatch *pIDispatch, DWORD Level)
+
+std::string BuildMethodSignature(_In_ ITypeInfo *pTypeInfo,
+	_In_ const FUNCDESC *FunctionDescription,
+	PCSTR InterfaceName,
+	const std::vector<VARIANT> &arguments = {})
 {
-	ITypeInfo *pTypeInfo;
-	TYPEATTR  *pTypeAttr;
-	BSTR       InterfaceName;
-	HRESULT    hResult;
+	_bstr_t methodName;
+	if (FAILED(pTypeInfo->GetDocumentation(FunctionDescription->memid,
+		methodName.GetAddress(), nullptr,
+		nullptr, nullptr)))
+		return {};
 
-	if (pIDispatch->GetTypeInfo(0, 0, &pTypeInfo) != S_OK) return (GET_TYPE_INFO_FAILED);
-	pTypeInfo->GetTypeAttr(&pTypeAttr);
+	std::stringstream MethodInformation;
+	const auto returnType = TypeDescriptionToString(
+		&FunctionDescription->elemdescFunc.tdesc, pTypeInfo);
+	MethodInformation << returnType << " " << InterfaceName
+		<< "::" << Narrow(methodName).c_str() << "(";
 
-	if (pTypeInfo->GetDocumentation(-1, &InterfaceName, 0, 0, 0) != S_OK)
-	{
-		WriteText(hLogFile, "Unknown default interface:\r\n");
-	}
-
-	for (UINT CurrrentFunction = 0; CurrrentFunction < pTypeAttr->cFuncs; CurrrentFunction++)
-	{
-		FUNCDESC* FunctionDescription;
-		hResult = pTypeInfo->GetFuncDesc(CurrrentFunction, &FunctionDescription);
-		if (hResult != S_OK)
-		{
-			if (hResult == E_OUTOFMEMORY) WriteText(hLogFile, "GetFuncDesc Failed (E_OUTOFMEMORY)\r\n");
-			else if (hResult == E_INVALIDARG)  WriteText(hLogFile, "GetFuncDesc Failed (E_INVALIDARG)\r\n");
-			else WriteText(hLogFile, "GetFuncDesc Failed (0x%x)\r\n", hResult);
-			continue;
-		}
-
-		if (!(FunctionDescription->wFuncFlags & FUNCFLAG_FRESTRICTED))
-		{
-			if (FunctionDescription->invkind == INVOKE_FUNC)
-				TestMethod(pIDispatch, pTypeInfo, FunctionDescription, InterfaceName, Level);
-		}
-		pTypeInfo->ReleaseFuncDesc(FunctionDescription);
-	}
-	return(SUCCESS);
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static int TestMethod(IDispatch *pIDispatch,ITypeInfo *pTypeInfo,                 //
-///                      FUNCDESC* FunctionDescription,BSTR InterfaceName,DWORD Level)//
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-
-static int TestMethod(IDispatch *pIDispatch, ITypeInfo *pTypeInfo, FUNCDESC* FunctionDescription, BSTR InterfaceName, DWORD Level)
-{
-	BSTR        LargeTestString;
-	VARIANT    *pArguments = NULL;
-	char       *MethodInformation;
-	BSTR        MethodName;
-	string_m    tempstr;
-	MethodInformation = new char[2048];
-	MethodInformation[0] = NULL;
-	LargeTestString = ::SysAllocStringLen(NULL, METHOD_AND_PROP_STRING_LENGTH - 1);
-	wmemset(LargeTestString, METHOD_AND_PROP_STRING_CHARACTER, METHOD_AND_PROP_STRING_LENGTH - 1);
-
-
-
-	if (pTypeInfo->GetDocumentation(FunctionDescription->memid, &MethodName, 0, 0, 0) != S_OK)
-	{
-		delete[] MethodInformation;
-		pTypeInfo->ReleaseFuncDesc(FunctionDescription);
-		::SysFreeString(LargeTestString);
-		WriteText(hLogFile, "Error In Name\r\n");
-		return(GET_DOCUMENTATION_FAILED);
-	}
-	tempstr = TypeDescriptionToString(&FunctionDescription->elemdescFunc.tdesc, pTypeInfo);
-	if (tempstr)
-	{
-		sprintf(MethodInformation, "%s %ws(", getstrptr_m(tempstr), MethodName);
-		strdelete_m(&tempstr);
-	}
-	if (MethodName) ::SysFreeString(MethodName);
 	if (FunctionDescription->cParams > 0)
 	{
-		BSTR* rgBstrNames = new BSTR[FunctionDescription->cParams + 1];
+		std::vector<BSTR> rgBstrNames(FunctionDescription->cParams + 1, nullptr);
+		ON_EXIT_SCOPE(for (auto &s
+			: rgBstrNames)
+		{
+			if (s)
+				::SysFreeString(s);
+		});
+
 		UINT NumrgBstrNames = 0;
-		pTypeInfo->GetNames(FunctionDescription->memid, rgBstrNames, FunctionDescription->cParams + 1, &NumrgBstrNames);
-		if (NumrgBstrNames > 0) SysFreeString(rgBstrNames[0]);
-
-		for (INT CurrentParameter = 0; CurrentParameter < FunctionDescription->cParams; CurrentParameter++)
+		pTypeInfo->GetNames(FunctionDescription->memid, rgBstrNames.data(),
+			FunctionDescription->cParams + 1, &NumrgBstrNames);
+		for (auto idx = 0; idx < FunctionDescription->cParams; ++idx)
 		{
-			if (FunctionDescription->lprgelemdescParam[CurrentParameter].paramdesc.wParamFlags != 0)
+			const auto elemDesc = FunctionDescription->lprgelemdescParam[idx];
+
+			int attrCount = 0;
+			if (elemDesc.paramdesc.wParamFlags & PARAMFLAG_FIN)
+				MethodInformation << (attrCount++ == 0 ? "[" : ",") << "in";
+			if (elemDesc.paramdesc.wParamFlags & PARAMFLAG_FOUT)
+				MethodInformation << (attrCount++ == 0 ? "[" : ",") << "out";
+			if (elemDesc.paramdesc.wParamFlags & PARAMFLAG_FRETVAL)
+				MethodInformation << (attrCount++ == 0 ? "[" : ",") << "retval";
+			if (elemDesc.paramdesc.wParamFlags & PARAMFLAG_FOPT)
+				MethodInformation << (attrCount++ == 0 ? "[" : ",") << "opt";
+			if (attrCount > 0)
+				MethodInformation << "]";
+
+			const auto paramType =
+				TypeDescriptionToString(&elemDesc.tdesc, pTypeInfo);
+			MethodInformation << paramType;
+
+			if (static_cast<UINT>(idx + 1) < NumrgBstrNames)
 			{
-				bool NeedComma = false;
-				strcat(MethodInformation, "[");
-				if (FunctionDescription->lprgelemdescParam[CurrentParameter].paramdesc.wParamFlags & PARAMFLAG_FIN)
-				{
-					strcat(MethodInformation, "in");
-					NeedComma = true;
-				}
-				if (FunctionDescription->lprgelemdescParam[CurrentParameter].paramdesc.wParamFlags & PARAMFLAG_FOUT)
-				{
-					if (NeedComma) strcat(MethodInformation, ", ");
-					strcat(MethodInformation, "out");
-					NeedComma = true;
-				}
-				if (FunctionDescription->lprgelemdescParam[CurrentParameter].paramdesc.wParamFlags & PARAMFLAG_FRETVAL)
-				{
-					if (NeedComma) strcat(MethodInformation, ", ");
-					strcat(MethodInformation, "retval");
-					NeedComma = true;
-				}
-				if (FunctionDescription->lprgelemdescParam[CurrentParameter].paramdesc.wParamFlags & PARAMFLAG_FOPT)
-				{
-					if (NeedComma) strcat(MethodInformation, ", ");
-					strcat(MethodInformation, "optional");
-				}
-				strcat(MethodInformation, "] ");
+				char TempArgStr[41];
+				const auto truncated =
+					_snprintf_s(TempArgStr, _TRUNCATE, "%ls", rgBstrNames[idx + 1]) < 0;
+				MethodInformation << " " << TempArgStr;
+				if (truncated)
+					MethodInformation << "...";
 			}
 
-			tempstr = TypeDescriptionToString(&FunctionDescription->lprgelemdescParam[CurrentParameter].tdesc, pTypeInfo);
-			if (tempstr)
+			if (arguments.size() ==
+				static_cast<size_t>(FunctionDescription->cParams))
 			{
-				strcat(MethodInformation, getstrptr_m(tempstr));
-				strdelete_m(&tempstr);
-			}
-			if ((CurrentParameter + 1) < (INT)NumrgBstrNames)
-			{
-				char *TempArgStr = new char[2048];
-				sprintf(TempArgStr, " %ws", rgBstrNames[CurrentParameter + 1]);
-				strcat(MethodInformation, TempArgStr);
-				SysFreeString(rgBstrNames[CurrentParameter + 1]);
-				delete[] TempArgStr;
-			}
-			strcat(MethodInformation, GetArgumentStringEquivalent(FunctionDescription->lprgelemdescParam[CurrentParameter].tdesc.vt));
-			if (CurrentParameter < FunctionDescription->cParams - 1)strcat(MethodInformation, ", ");
-		}
-		delete[] rgBstrNames;
-	}
-	strcat(MethodInformation, ")");
-
-	DISPPARAMS Parameters;
-	memset(&Parameters, 0, sizeof(Parameters));
-
-	Parameters.cArgs = FunctionDescription->cParams;
-	Parameters.cNamedArgs = 0;
-	Parameters.rgvarg = NULL;
-
-	if (Parameters.cArgs > 0)
-	{
-		pArguments = new VARIANT[Parameters.cArgs];
-
-		Parameters.rgvarg = pArguments;
-		memset(pArguments, 0, sizeof(VARIANT) * Parameters.cArgs);
-
-		for (unsigned int i = 0; i < Parameters.cArgs; i++)
-		{
-			VariantInit(&pArguments[i]);
-			pArguments[i].vt = FunctionDescription->lprgelemdescParam[i].tdesc.vt;
-			SetArgument(&pArguments[i], LargeTestString);
-		}
-	}
-
-	VARIANT Result;
-	VariantInit(&Result);
-	Result.vt = VT_BOOL;
-	Result.boolVal = VARIANT_FALSE;
-	UINT uArgErr;
-
-	WriteText(hLogFile, "Invoking Method                 - %ws::%s\r\n", InterfaceName, MethodInformation);
-
-	try
-	{
-		pIDispatch->Invoke(FunctionDescription->memid, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_METHOD, &Parameters, &Result, NULL, &uArgErr);
-	}
-
-	catch (const access_violation& e)
-	{
-		COM_Object_Exeception_Occurred = true;
-		WriteText(hLogFile, "*****************************\r\n");
-		WriteText(hLogFile, "***   Access Violation    ***\r\n");
-		WriteText(hLogFile, "*****************************\r\n");
-		WriteText(hLogFile, "Invoked Method - %ws::%s\r\n", InterfaceName, MethodInformation);
-		WriteText(hLogFile, "%s at 0x%p :Bad %s on 0x%p\r\n",
-			e.what(), e.where(), e.isWrite() ? "write" : "read", e.badAddress());
-		WriteText(hLogFile, "*****************************\r\n");
-
-	}
-	catch (const win32_exception& e)
-	{
-		COM_Object_Exeception_Occurred = true;
-		WriteText(hLogFile, "*****************************\r\n");
-		WriteText(hLogFile, "***   Win32 Exception     ***\r\n");
-		WriteText(hLogFile, "*****************************\r\n");
-		WriteText(hLogFile, "Invoked Method - %ws::%s\r\n", InterfaceName, MethodInformation);
-		WriteText(hLogFile, "%s (code %x) at 0x%p\r\n",
-			e.what(), e.code(), e.where());
-		WriteText(hLogFile, "*****************************\r\n");
-
-	}
-
-	if (Result.vt == VT_DISPATCH && !Result.pdispVal)
-	{
-#if LOGINFO
-		WriteText(hLogFile, "*****************************\r\n");
-		WriteText(hLogFile, "***      No Results       ***\r\n");
-		WriteText(hLogFile, "*****************************\r\n");
-		WriteText(hLogFile, "Invoked Method - %ws::%s\r\n", InterfaceName, MethodInformation);
-		WriteText(hLogFile, "*****************************\r\n");
-
-#endif
-	}
-
-	if (Result.vt == VT_DISPATCH && Result.pdispVal)
-	{
-		if (pIDispatch != Result.pdispVal)
-		{
-			LARGE_INTEGER CurrentPos, Before, After, zero;
-			zero.QuadPart = 0;
-			if (!SetFilePointerEx(hLogFile, zero, &CurrentPos, FILE_CURRENT))
-			{
-				WriteText(hLogFile, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
-				WriteText(hLogFile, "Set File Pointer 1 Failed\r\n");
-				WriteText(hLogFile, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
-			}
-			WriteText(hLogFile, "Recurse from interface %ws\r\n", InterfaceName);
-			if (!SetFilePointerEx(hLogFile, zero, &Before, FILE_CURRENT))
-			{
-				WriteText(hLogFile, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
-				WriteText(hLogFile, "Set File Pointer 2 Failed\r\n");
-				WriteText(hLogFile, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
-			}
-			Test_Dispatch_Interface(Result.pdispVal, Level + 1);
-			if (!SetFilePointerEx(hLogFile, zero, &After, FILE_CURRENT))
-			{
-				WriteText(hLogFile, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
-				WriteText(hLogFile, "Set File Pointer 3 Failed\r\n");
-				WriteText(hLogFile, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
-			}
-			if (Before.QuadPart == After.QuadPart)
-			{
-				if (!SetFilePointerEx(hLogFile, CurrentPos, NULL, FILE_BEGIN))
-				{
-					WriteText(hLogFile, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
-					WriteText(hLogFile, "Set File Pointer 4 Failed\r\n");
-					WriteText(hLogFile, "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\r\n");
-				}
-			}
-			else
-			{
-				WriteText(hLogFile, "Recurse return %ws\r\n", InterfaceName);
-			}
-		}
-	}
-
-	try
-	{
-		VariantClear(&Result);
-	}
-	catch (const access_violation& e)
-	{
-#if LOG_CRASH_ON_FREE
-		WriteText(hLogFile, "*****************************\r\n");
-		WriteText(hLogFile, "***   Access Violation    ***\r\n");
-		WriteText(hLogFile, "*****************************\r\n");
-		WriteText(hLogFile, "Invoked - VariantClear 2\r\n");
-		WriteText(hLogFile, "%s at 0x%p :Bad %s on 0x%p\r\n",
-			e.what(), e.where(), e.isWrite() ? "write" : "read", e.where());
-		WriteText(hLogFile, "*****************************\r\n");
-#endif
-	}
-	catch (const win32_exception& e)
-	{
-#if LOG_CRASH_ON_FREE
-		WriteText(hLogFile, "*****************************\r\n");
-		WriteText(hLogFile, "***   Win32 Exception     ***\r\n");
-		WriteText(hLogFile, "*****************************\r\n");
-		WriteText(hLogFile, "Invoked - VariantClear 2\r\n");
-		WriteText(hLogFile, "%s (code %x) at 0x%p\r\n",
-			e.what(), e.code(), e.where());
-		WriteText(hLogFile, "*****************************\r\n");
-#endif
-	}
-
-	delete[] pArguments;
-	::SysFreeString(LargeTestString);
-	delete[] MethodInformation;
-	return(SUCCESS);
-}
-
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-///static DebugProcess(DWORD ProcessId)                                                // 
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static HANDLE DebugProcess(DWORD ProcessId)
-{
-	DWORD   id;
-
-	KillDebugMonitor = FALSE;
-	MonitorDetectedIECrash = FALSE;
-#pragma warning( push )
-#pragma warning( disable : 4312 ) 
-	DebugProcessThreadHandle = CreateThread(NULL, 0, DebugProcessThread, (LPVOID)ProcessId, CREATE_SUSPENDED, &id);
-#pragma warning( pop ) 
-	if (DebugProcessThreadHandle == NULL)
-	{
-		return(NULL);
-	}
-	ResumeThread(DebugProcessThreadHandle);
-	return(DebugProcessThreadHandle);
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-///static DWORD WINAPI  DebugProcessThread(LPVOID arg)                                // 
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static DWORD WINAPI  DebugProcessThread(LPVOID arg)
-{
-#pragma warning( push )
-#pragma warning( disable : 4311 ) 
-	DWORD       ProcessId = (DWORD)arg;
-#pragma warning( pop )
-	DEBUG_EVENT DebugEvent;
-	//BOOL        First_Exception_Event = TRUE;
-	HINSTANCE   hKernel32 = NULL;
-	BOOL(WINAPI *pDebugSetProcessKillOnExit)(BOOL) = NULL;
-	BOOL(WINAPI *pDebugActiveProcessStop)(DWORD) = NULL;
-
-	hKernel32 = LoadLibrary(_T("kernel32.dll"));
-	if (hKernel32)
-	{
-		*(FARPROC *)&pDebugSetProcessKillOnExit = GetProcAddress(hKernel32, "DebugSetProcessKillOnExit");
-		*(FARPROC *)&pDebugActiveProcessStop = GetProcAddress(hKernel32, "DebugActiveProcessStop");
-		if ((pDebugSetProcessKillOnExit == NULL) && (pDebugActiveProcessStop == NULL))
-		{
-			FreeLibrary(hKernel32);
-			hKernel32 = NULL;
-		}
-	}
-
-	if (!DebugActiveProcess(ProcessId))
-	{
-		if (hKernel32) FreeLibrary(hKernel32);
-		return DWORD(FAILED_TO_ATTACH_DEBUGGER);
-	}
-	if (pDebugSetProcessKillOnExit) pDebugSetProcessKillOnExit(TRUE);
-	while (1)
-	{
-		if (!WaitForDebugEvent(&DebugEvent, 100))
-		{
-			if (KillDebugMonitor)
-			{
-				if (pDebugActiveProcessStop) pDebugActiveProcessStop(ProcessId);
-				if (hKernel32) FreeLibrary(hKernel32);
-				return(SUCCESS);
-			}
-			else continue;
-		}
-
-		// Process the debugging event code.
-		switch (DebugEvent.dwDebugEventCode)
-		{
-		case EXCEPTION_DEBUG_EVENT:
-
-			if (!DebugEvent.u.Exception.dwFirstChance)
-			{
-				WriteText(hLogFile, "*****************************\r\n");
-				WriteText(hLogFile, "*** IE Exception          ***\r\n");
-				WriteText(hLogFile, "*****************************\r\n");
-				if (DebugEvent.u.Exception.ExceptionRecord.NumberParameters == 2)
-				{
-					if (DebugEvent.u.Exception.ExceptionRecord.ExceptionInformation[0] == 1)
-					{
-						// write error
-						WriteText(hLogFile, "%s(0x%08x): instruction address: 0x%p, invalid write to 0x%08x\r\n",
-							GetExceptionName(DebugEvent.u.Exception.ExceptionRecord.ExceptionCode),
-							DebugEvent.u.Exception.ExceptionRecord.ExceptionCode,
-							DebugEvent.u.Exception.ExceptionRecord.ExceptionAddress,
-							DebugEvent.u.Exception.ExceptionRecord.ExceptionInformation[1]);
-					}
-					else
-					{
-						// read error
-						WriteText(hLogFile, "%s(0x%08x): instruction address: 0x%p, invalid read from 0x%08x\r\n",
-							GetExceptionName(DebugEvent.u.Exception.ExceptionRecord.ExceptionCode),
-							DebugEvent.u.Exception.ExceptionRecord.ExceptionCode,
-							DebugEvent.u.Exception.ExceptionRecord.ExceptionAddress,
-							DebugEvent.u.Exception.ExceptionRecord.ExceptionInformation[1]);
-					}
-				}
-				else
-				{
-					WriteText(hLogFile, "%s(0x%08x): instruction address: 0x%p\r\n",
-						GetExceptionName(DebugEvent.u.Exception.ExceptionRecord.ExceptionCode),
-						DebugEvent.u.Exception.ExceptionRecord.ExceptionCode,
-						DebugEvent.u.Exception.ExceptionRecord.ExceptionAddress);
-				}
-				WriteText(hLogFile, "*****************************\r\n");
-				MonitorDetectedIECrash = TRUE;
-
+				// arguments in reverse order...
+				const auto argIdx = arguments.size() - idx - 1;
+				MethodInformation << "="
+					<< VariantToString(arguments[argIdx],
+						/*includeVT=*/false,
+						/*maxValueLength=*/15);
 			}
 
-			if ((DebugEvent.u.Exception.dwFirstChance) &&
-				(DebugEvent.u.Exception.ExceptionRecord.ExceptionCode == EXCEPTION_BREAKPOINT))
-				ContinueDebugEvent(DebugEvent.dwProcessId, DebugEvent.dwThreadId, DBG_CONTINUE);
-
-			else ContinueDebugEvent(DebugEvent.dwProcessId, DebugEvent.dwThreadId, DBG_EXCEPTION_NOT_HANDLED);
-
-
-			if (MonitorDetectedIECrash)
-			{
-				if (pDebugActiveProcessStop) pDebugActiveProcessStop(ProcessId);
-				if (hKernel32) FreeLibrary(hKernel32);
-				return DWORD(INTERNET_EXPLORER_CRASHED);
-			}
-			break;
-		case CREATE_THREAD_DEBUG_EVENT:
-		case CREATE_PROCESS_DEBUG_EVENT:
-		case EXIT_THREAD_DEBUG_EVENT:
-		case EXIT_PROCESS_DEBUG_EVENT:
-		case LOAD_DLL_DEBUG_EVENT:
-		case UNLOAD_DLL_DEBUG_EVENT:
-		default:
-			ContinueDebugEvent(DebugEvent.dwProcessId,
-				DebugEvent.dwThreadId,
-				DBG_CONTINUE);
-			break;
-
+			if (idx < FunctionDescription->cParams - 1)
+				MethodInformation << ", ";
 		}
 	}
 
+	MethodInformation << ")";
+	return MethodInformation.str();
 }
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static char * GetExceptionName (DWORD ExceptionCode )                             // 
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
 
-static char * GetExceptionName(DWORD ExceptionCode)
+int TestMemberFunc(_In_ IDispatch *pIDispatch, bool PrintOnly,
+	_In_ ITypeInfo *pTypeInfo,
+	const FUNCDESC *FunctionDescription, PCSTR InterfaceName,
+	DWORD Level)
 {
-	switch (ExceptionCode)
+
+	std::vector<VARIANT> arguments;
+	std::vector<VARIANT> refArgs;
+
+	if (gExecutionMode == ExecutionMode::TestControl)
 	{
-	case EXCEPTION_ACCESS_VIOLATION:        return "EXCEPTION ACCESS VIOLATION";
-	case EXCEPTION_ARRAY_BOUNDS_EXCEEDED:    return "EXCEPTION ARRAY BOUNDS EXCEEDED";
-	case EXCEPTION_BREAKPOINT:               return "EXCEPTION BREAKPOINT";
-	case EXCEPTION_DATATYPE_MISALIGNMENT:    return "EXCEPTION DATATYPE MISALIGNMENT";
-	case EXCEPTION_FLT_DENORMAL_OPERAND:     return "EXCEPTION FLT DENORMAL OPERAND";
-	case EXCEPTION_FLT_DIVIDE_BY_ZERO:       return "EXCEPTION FLT DIVIDE BY ZERO";
-	case EXCEPTION_FLT_INEXACT_RESULT:       return "EXCEPTION FLT INEXACT RESULT";
-	case EXCEPTION_FLT_INVALID_OPERATION:    return "EXCEPTION FLT INVALID OPERATION";
-	case EXCEPTION_FLT_OVERFLOW:             return "EXCEPTION FLT OVERFLOW";
-	case EXCEPTION_FLT_STACK_CHECK:          return "EXCEPTION FLT STACK_CHECK";
-	case EXCEPTION_FLT_UNDERFLOW:            return "EXCEPTION FLT UNDERFLOW";
-	case EXCEPTION_ILLEGAL_INSTRUCTION:      return "EXCEPTION ILLEGAL INSTRUCTION";
-	case EXCEPTION_IN_PAGE_ERROR:            return "EXCEPTION IN PAGE ERROR";
-	case EXCEPTION_INT_DIVIDE_BY_ZERO:       return "EXCEPTION INT DIVIDE BY ZERO";
-	case EXCEPTION_INT_OVERFLOW:             return "EXCEPTION INT OVERFLOW";
-	case EXCEPTION_INVALID_DISPOSITION:      return "EXCEPTION INVALID DISPOSITION";
-	case EXCEPTION_NONCONTINUABLE_EXCEPTION: return "EXCEPTION NONCONTINUABLE EXCEPTION";
-	case EXCEPTION_PRIV_INSTRUCTION:         return "EXCEPTION PRIV INSTRUCTION";
-	case EXCEPTION_SINGLE_STEP:              return "EXCEPTION SINGLE STEP";
-	case EXCEPTION_STACK_OVERFLOW:           return "EXCEPTION STACK OVERFLOW";
-	default:                                 return "EXCEPTION UNKNOWN";
-	}
-
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static void StopDebugger(HANDLE DebugThreadHandle)                                // 
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static void StopDebugger(HANDLE DebugThreadHandle)
-{
-	KillDebugMonitor = TRUE;
-	WaitForSingleObject(DebugThreadHandle, 1000);
-	CloseHandle(DebugThreadHandle);
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// BSTR ToBSTR( T a_Str )                                                            // 
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-
-template< class T >
-BSTR ToBSTR(T a_Str)
-{
-	return(_bstr_t(a_Str).copy());
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static int IELoadUrl(LPCTSTR Url)                                                 // 
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static int IELoadUrl(char * Url)
-{
-	IWebBrowser2   *IeBrowserInterface = NULL; //Create a IWebBrowser variable 
-	HRESULT         hResult;
-	VARIANT         var;
-	BSTR            bstrURL = NULL;
-	DWORD           ProcId;
-	HANDLE          DebugThreadHandle;
-
-	bstrURL = ToBSTR(Url);
-
-	if (KillAllProcessesByName("iexplore.exe")) printf("Kill all iexplore.exe failed\n");
-
-	try
-	{
-		hResult = CoCreateInstance(CLSID_InternetExplorer, NULL, CLSCTX_SERVER, IID_IWebBrowser2,
-			(void**)&IeBrowserInterface);
-		if ((hResult != S_OK) || (IeBrowserInterface == NULL)) return(FAILED_TO_START_BROWSER);
-		ZeroMemory(&var, sizeof(VARIANT));
-		IeBrowserInterface->put_Visible(VARIANT_TRUE);
-		if ((GetProcessIdByName("iexplore.exe", &ProcId)) != 0)
+		// generate arguments...
+		arguments.resize(FunctionDescription->cParams);
+		refArgs.resize(FunctionDescription->cParams);
+		for (auto idx = 0; idx < FunctionDescription->cParams; ++idx)
 		{
-			IeBrowserInterface->Quit();
-			IeBrowserInterface->Release();
-			return(FAILED_TO_GET_PROCESS_ID);
-		}
-	}
-	catch (...)
-	{
-		if (bstrURL) SysFreeString(bstrURL);
-		return(FAILED_TO_START_BROWSER);
-	}
-	if ((DebugThreadHandle = DebugProcess(ProcId)) == NULL)
-	{
-		IeBrowserInterface->Quit();
-		IeBrowserInterface->Release();
-		return(FAILED_TO_ATTACH_DEBUGGER);
-	}
-	try
-	{
-		IeBrowserInterface->Navigate(bstrURL, &var, &var, &var, &var);
-		Sleep(1500);
-		IeBrowserInterface->Navigate(bstrURL, &var, &var, &var, &var);
-		Sleep(800);
-	}
-	catch (const access_violation& e)
-	{
-		COM_Object_Exeception_Occurred = true;
-		WriteText(hLogFile, "*****************************\r\n");
-		WriteText(hLogFile, "*** IE Access Violation   ***\r\n");
-		WriteText(hLogFile, "*****************************\r\n");
-		WriteText(hLogFile, "%s at 0x%p :Bad %s on 0x%p\r\n",
-			e.what(), e.where(), e.isWrite() ? "write" : "read", e.badAddress());
-		WriteText(hLogFile, "*****************************\r\n");
-		if (bstrURL) SysFreeString(bstrURL);
-		IeBrowserInterface->Quit();
-		IeBrowserInterface->Release();
-		StopDebugger(DebugThreadHandle);
-		return(INTERNET_EXPLORER_CRASHED);
-	}
-	catch (const win32_exception& e)
-	{
-		COM_Object_Exeception_Occurred = true;
-		WriteText(hLogFile, "*****************************\r\n");
-		WriteText(hLogFile, "*** IE Win32 Exception    ***\r\n");
-		WriteText(hLogFile, "*****************************\r\n");
-		WriteText(hLogFile, "%s (code %x) at 0x%p\r\n",
-			e.what(), e.code(), e.where());
-		WriteText(hLogFile, "*****************************\r\n");
-		if (bstrURL) SysFreeString(bstrURL);
-		IeBrowserInterface->Quit();
-		IeBrowserInterface->Release();
-		StopDebugger(DebugThreadHandle);
-		return(INTERNET_EXPLORER_CRASHED);
-	}
+			// arguments are in reverse order...
+			const auto argIdx = arguments.size() - idx - 1;
+			::VariantInit(&arguments[argIdx]);
+			::VariantInit(&refArgs[argIdx]);
 
-	if (bstrURL) SysFreeString(bstrURL);
-	IeBrowserInterface->Quit();
-	IeBrowserInterface->Release();
-	StopDebugger(DebugThreadHandle);
-	if (MonitorDetectedIECrash) return(INTERNET_EXPLORER_CRASHED);
-	else return(SUCCESS);
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static int IELoadUrlPARAMS(LPCTSTR Url,DWORD Timeout)                             // 
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static int IELoadUrlPARAMS(char * Url, DWORD Timeout)
-{
-	IWebBrowser2   *IeBrowserInterface = NULL; //Create a IWebBrowser variable 
-	HRESULT         hResult;
-	VARIANT         var;
-	BSTR            bstrURL = NULL;
-	DWORD           ProcId;
-	HANDLE          DebugThreadHandle;
-
-	bstrURL = ToBSTR(Url);
-
-	if (KillAllProcessesByName("iexplore.exe")) printf("Kill all iexplore.exe failed\n");
-
-	try
-	{
-		hResult = CoCreateInstance(CLSID_InternetExplorer, NULL, CLSCTX_SERVER, IID_IWebBrowser2,
-			(void**)&IeBrowserInterface);
-		if ((hResult != S_OK) || (IeBrowserInterface == NULL)) return(FAILED_TO_START_BROWSER);
-		ZeroMemory(&var, sizeof(VARIANT));
-		IeBrowserInterface->put_Visible(VARIANT_TRUE);
-		if ((GetProcessIdByName("iexplore.exe", &ProcId)) != 0)
-		{
-			IeBrowserInterface->Quit();
-			IeBrowserInterface->Release();
-			return(FAILED_TO_GET_PROCESS_ID);
-		}
-	}
-	catch (...)
-	{
-		if (bstrURL) SysFreeString(bstrURL);
-		return(FAILED_TO_START_BROWSER);
-	}
-	if ((DebugThreadHandle = DebugProcess(ProcId)) == NULL)
-	{
-		IeBrowserInterface->Quit();
-		IeBrowserInterface->Release();
-		return(FAILED_TO_ATTACH_DEBUGGER);
-	}
-	try
-	{
-		IeBrowserInterface->Navigate(bstrURL, &var, &var, &var, &var);
-		Sleep(Timeout);
-		ActivateControlInIE();
-		Sleep(1000);
-		IeBrowserInterface->Navigate(bstrURL, &var, &var, &var, &var);
-		Sleep(1000);
-	}
-	catch (const access_violation& e)
-	{
-		COM_Object_Exeception_Occurred = true;
-		WriteText(hLogFile, "*****************************\r\n");
-		WriteText(hLogFile, "*** IE Access Violation   ***\r\n");
-		WriteText(hLogFile, "*****************************\r\n");
-		WriteText(hLogFile, "%s at 0x%p :Bad %s on 0x%p\r\n",
-			e.what(), e.where(), e.isWrite() ? "write" : "read", e.badAddress());
-		WriteText(hLogFile, "*****************************\r\n");
-		if (bstrURL) SysFreeString(bstrURL);
-		IeBrowserInterface->Quit();
-		IeBrowserInterface->Release();
-		StopDebugger(DebugThreadHandle);
-		return(INTERNET_EXPLORER_CRASHED);
-	}
-	catch (const win32_exception& e)
-	{
-		COM_Object_Exeception_Occurred = true;
-		WriteText(hLogFile, "*****************************\r\n");
-		WriteText(hLogFile, "*** IE Win32 Exception    ***\r\n");
-		WriteText(hLogFile, "*****************************\r\n");
-		WriteText(hLogFile, "%s (code %x) at 0x%p\r\n",
-			e.what(), e.code(), e.where());
-		WriteText(hLogFile, "*****************************\r\n");
-		if (bstrURL) SysFreeString(bstrURL);
-		IeBrowserInterface->Quit();
-		IeBrowserInterface->Release();
-		StopDebugger(DebugThreadHandle);
-		return(INTERNET_EXPLORER_CRASHED);
-	}
-
-	if (bstrURL) SysFreeString(bstrURL);
-	IeBrowserInterface->Quit();
-	IeBrowserInterface->Release();
-	StopDebugger(DebugThreadHandle);
-	if (MonitorDetectedIECrash) return(INTERNET_EXPLORER_CRASHED);
-	else return(SUCCESS);
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static int Create_HTML_Test_File(char *FileName,char *CLSID)                      //
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static int Create_HTML_Test_File(char *FileName, char *CLSID)
-{
-	char   ADS_FileName[MAX_PATH];
-	HANDLE hFile, hStream;
-
-
-	if (FileName == NULL) return(-1);
-
-	strcpy(ADS_FileName, FileName);
-	strcat(ADS_FileName, ":Zone.Identifier");
-
-	hFile = CreateFile(FileName,
-		GENERIC_WRITE,
-		FILE_SHARE_WRITE,
-		NULL,
-		OPEN_ALWAYS,
-		0,
-		NULL);
-	if (hFile == INVALID_HANDLE_VALUE) return(-1);
-
-	hStream = CreateFile(ADS_FileName,
-		GENERIC_WRITE,
-		FILE_SHARE_WRITE,
-		NULL,
-		OPEN_ALWAYS,
-		0,
-		NULL);
-
-	if (hStream == INVALID_HANDLE_VALUE)
-	{
-		CloseHandle(hFile);
-		DeleteFile(FileName);
-		return(-1);
-	}
-	if (!WriteText(hFile, "<!--\r\n"))
-	{
-		CloseHandle(hFile);
-		CloseHandle(hStream);
-		return(-1);
-	}
-	if (!WriteText(hFile, "COM Object - %s %s\r\n", CLSID_String, CLSID_Description))
-	{
-		CloseHandle(hFile);
-		CloseHandle(hStream);
-		return(-1);
-	}
-
-	if (HaveCOM_Filename) PrintFileInfo(hFile, COM_FileName);
-
-	if (!WriteText(hFile, "-->\r\n"))
-	{
-		CloseHandle(hFile);
-		CloseHandle(hStream);
-		return(-1);
-	}
-	if (!WriteText(hFile, "<object id=TestObj classid=\"CLSID:%s\" style=\"width:100%%;height:350\"></object>", CLSID))
-	{
-		CloseHandle(hFile);
-		CloseHandle(hStream);
-		DeleteFile(FileName);
-		return(-1);
-	}
-
-	if (!WriteText(hStream, "[ZoneTransfer]\nZoneId=%d\n", ZoneID))
-	{
-		CloseHandle(hFile);
-		CloseHandle(hStream);
-		DeleteFile(FileName);
-		return(-1);
-	}
-	CloseHandle(hFile);
-	CloseHandle(hStream);
-	return(0);
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static int Generate_HTML_PARAMS_Test_File(char *FileName,char *CLSID)               //
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static int Generate_HTML_PARAMS_Test_File(char *FileName, char *CLSID)
-{
-	char   ADS_FileName[MAX_PATH];
-	HANDLE hFile, hStream;
-
-	char   *BIG_BIG_String = NULL;
-	TStringList *pNode;
-
-	if (FileName == NULL) return(-1);
-
-	if (HaveCOM_Filename == false) return(-1);
-
-	if (OpenFileName(COM_FileName) == 0)
-	{
-		DWORD i;
-		for (i = 0; i < NumberOfSectionsToCheck; i++)
-		{
-			StringsASCII(ControlLoadedInMemory + SectionsToCheck[i].Offset, SectionsToCheck[i].Length);
-			StringsUnicode(ControlLoadedInMemory + SectionsToCheck[i].Offset, SectionsToCheck[i].Length);
-
-		}
-	}
-	else return(-1);
-
-	strcpy(ADS_FileName, FileName);
-	strcat(ADS_FileName, ":Zone.Identifier");
-
-	hFile = CreateFile(FileName,
-		GENERIC_WRITE,
-		FILE_SHARE_WRITE,
-		NULL,
-		OPEN_ALWAYS,
-		0,
-		NULL);
-	if (hFile == INVALID_HANDLE_VALUE) return(-1);
-
-	hStream = CreateFile(ADS_FileName,
-		GENERIC_WRITE,
-		FILE_SHARE_WRITE,
-		NULL,
-		OPEN_ALWAYS,
-		0,
-		NULL);
-
-	if (hStream == INVALID_HANDLE_VALUE)
-	{
-		CloseHandle(hFile);
-		DeleteFile(FileName);
-		LocalFree(ControlLoadedInMemory);
-		DeleteStringList();
-		return(-1);
-	}
-
-	if (!WriteText(hFile, "<!--\r\n"))
-	{
-		CloseHandle(hFile);
-		CloseHandle(hStream);
-		return(NULL);
-	}
-	if (!WriteText(hFile, "COM Object - %s %s\r\n", CLSID_String, CLSID_Description))
-	{
-		CloseHandle(hFile);
-		CloseHandle(hStream);
-		return(NULL);
-	}
-
-	if (HaveCOM_Filename) PrintFileInfo(hFile, COM_FileName);
-
-	if (!WriteText(hFile, "-->\r\n"))
-	{
-		CloseHandle(hFile);
-		CloseHandle(hStream);
-		return(NULL);
-	}
-
-	if (!WriteText(hFile, "<object id=TestObj classid=\"CLSID:%s\" style=\"width:100%%;height:350\">\r\n", CLSID))
-	{
-		CloseHandle(hFile);
-		CloseHandle(hStream);
-		DeleteFile(FileName);
-		LocalFree(ControlLoadedInMemory);
-		DeleteStringList();
-		return(-1);
-	}
-	if ((BIG_BIG_String = (char *)malloc(PARAM_STRING_LENGTH + 1)) == NULL)
-	{
-		CloseHandle(hFile);
-		CloseHandle(hStream);
-		DeleteFile(FileName);
-		LocalFree(ControlLoadedInMemory);
-		DeleteStringList();
-		return(-1);
-	}
-	memset(BIG_BIG_String, PARAM_STRING_CHARACTER, PARAM_STRING_LENGTH);
-	BIG_BIG_String[PARAM_STRING_LENGTH] = 0;
-
-	for (pNode = StringListHead; pNode != NULL; pNode = pNode->pNext)
-	{
-		if (!WriteText(hFile, "<param NAME=\"%s\" VALUE=\"", pNode->String))
-		{
-			CloseHandle(hFile);
-			CloseHandle(hStream);
-			DeleteFile(FileName);
-			LocalFree(ControlLoadedInMemory);
-			DeleteStringList();
-			free(BIG_BIG_String);
-			return(-1);
-		}
-
-		if (!WriteText(hFile, BIG_BIG_String))
-		{
-			CloseHandle(hFile);
-			CloseHandle(hStream);
-			DeleteFile(FileName);
-			LocalFree(ControlLoadedInMemory);
-			DeleteStringList();
-			free(BIG_BIG_String);
-			return(-1);
-		}
-		if (!WriteText(hFile, "\">\r\n"))
-		{
-			CloseHandle(hFile);
-			CloseHandle(hStream);
-			DeleteFile(FileName);
-			LocalFree(ControlLoadedInMemory);
-			DeleteStringList();
-			free(BIG_BIG_String);
-			return(-1);
-		}
-	}
-	if (!WriteText(hFile, "</object>\r\n"))
-	{
-		CloseHandle(hFile);
-		CloseHandle(hStream);
-		DeleteFile(FileName);
-		LocalFree(ControlLoadedInMemory);
-		DeleteStringList();
-		free(BIG_BIG_String);
-		return(-1);
-	}
-
-	free(BIG_BIG_String);
-	if (!WriteText(hStream, "[ZoneTransfer]\nZoneId=%d\n", ZoneID))
-	{
-		CloseHandle(hFile);
-		CloseHandle(hStream);
-		DeleteFile(FileName);
-		LocalFree(ControlLoadedInMemory);
-		DeleteStringList();
-		return(-1);
-	}
-	CloseHandle(hFile);
-	CloseHandle(hStream);
-	LocalFree(ControlLoadedInMemory);
-	DeleteStringList();
-	return(0);
-}
-
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static HANDLE Create_HTML_PARAMS_Test_File(char *FileName,char *CLSID)               //
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static HANDLE Create_HTML_PARAMS_Test_File(char *FileName, char *CLSID)
-{
-	char   ADS_FileName[MAX_PATH];
-	HANDLE hFile, hStream;
-
-	if (FileName == NULL) return(NULL);
-
-
-	strcpy(ADS_FileName, FileName);
-	strcat(ADS_FileName, ":Zone.Identifier");
-
-	hFile = CreateFile(FileName,
-		GENERIC_WRITE,
-		FILE_SHARE_WRITE,
-		NULL,
-		OPEN_ALWAYS,
-		0,
-		NULL);
-	if (hFile == INVALID_HANDLE_VALUE) return(NULL);
-
-	hStream = CreateFile(ADS_FileName,
-		GENERIC_WRITE,
-		FILE_SHARE_WRITE,
-		NULL,
-		OPEN_ALWAYS,
-		0,
-		NULL);
-
-	if (hStream == INVALID_HANDLE_VALUE)
-	{
-		CloseHandle(hFile);
-		DeleteFile(FileName);
-		return(NULL);
-	}
-	if (!WriteText(hStream, "[ZoneTransfer]\nZoneId=%d\n", ZoneID))
-	{
-		CloseHandle(hFile);
-		CloseHandle(hStream);
-		DeleteFile(FileName);
-		return(NULL);
-	}
-
-	if (!WriteText(hFile, "<!--\r\n"))
-	{
-		CloseHandle(hFile);
-		CloseHandle(hStream);
-		return(NULL);
-	}
-	if (!WriteText(hFile, "COM Object - %s %s\r\n", CLSID_String, CLSID_Description))
-	{
-		CloseHandle(hFile);
-		CloseHandle(hStream);
-		return(NULL);
-	}
-
-	if (HaveCOM_Filename) PrintFileInfo(hFile, COM_FileName);
-
-	if (!WriteText(hFile, "-->\r\n"))
-	{
-		CloseHandle(hFile);
-		CloseHandle(hStream);
-		return(NULL);
-	}
-
-	if (!WriteText(hFile, "<object id=TestObj classid=\"CLSID:%s\" style=\"width:100%%;height:350\">\r\n", CLSID))
-	{
-		CloseHandle(hFile);
-		CloseHandle(hStream);
-		return(NULL);
-	}
-	CloseHandle(hStream);
-	return(hFile);
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static void DeleteTempFile(char *FileName)                                        //
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static void DeleteTempFile(char *FileName)
-{
-	DWORD RetryCount = 0;
-	DWORD LastError;
-	while (1)
-	{
-		if (DeleteFile(FileName) == 0)
-		{
-			LastError = GetLastError();
-			if (LastError == ERROR_SHARING_VIOLATION)
-			{
-				if (RetryCount < 10)
-				{
-					RetryCount++;
-					Sleep(2000);
-					continue;
-				}
-				else break;
-			}
-			else break;
-		}
-		else break;
-	}
-}
-
-//---------------------------------------------------------------------------
-int OpenFileName(char* FileName)
-{
-	HANDLE	hFile;
-	IMAGE_DOS_HEADER		image_dos_header;
-	IMAGE_NT_HEADERS		image_nt_headers;
-	IMAGE_SECTION_HEADER	image_section_header;
-	DWORD   FileSize;
-	DWORD   dwBytesRead;
-	DWORD   dwRO_first_section;
-	DWORD   i;
-	char *  FullFileName;
-	MemoryNumBytes = 0;
-
-	FullFileName = FindFile(FileName);
-	if (FullFileName == NULL) return(-1);
-	hFile = CreateFile(FullFileName, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
-		NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-	if (hFile == INVALID_HANDLE_VALUE) return(-1);
-	FileSize = GetFileSize(hFile, 0);
-	if (FileSize == 0)
-	{
-		CloseHandle(hFile);
-		return(-1);
-	}
-	ControlLoadedInMemory = (BYTE *)LocalAlloc(LPTR, FileSize);
-	if (ControlLoadedInMemory == NULL)
-	{
-		CloseHandle(hFile);
-		return(-1);
-
-	}
-	if (ReadFile(hFile, ControlLoadedInMemory, FileSize, &dwBytesRead, NULL) == 0)
-	{
-		LocalFree(ControlLoadedInMemory);
-		ControlLoadedInMemory = NULL;
-		CloseHandle(hFile);
-		return(-1);
-	}
-	else CloseHandle(hFile);
-	if (dwBytesRead != FileSize)
-	{
-
-		LocalFree(ControlLoadedInMemory);
-		ControlLoadedInMemory = NULL;
-		return(-1);
-	}
-	MemoryNumBytes = dwBytesRead;
-
-	CopyMemory(&image_dos_header, ControlLoadedInMemory, sizeof(IMAGE_DOS_HEADER));
-	CopyMemory(&image_nt_headers,
-		ControlLoadedInMemory + image_dos_header.e_lfanew,
-		sizeof(IMAGE_NT_HEADERS));
-	dwRO_first_section = image_dos_header.e_lfanew + sizeof(IMAGE_NT_HEADERS);
-
-	if (image_dos_header.e_magic != IMAGE_DOS_SIGNATURE)// MZ
-	{
-		LocalFree(ControlLoadedInMemory);
-		ControlLoadedInMemory = NULL;
-		MemoryNumBytes = 0;
-		return(-1);
-	}
-	if (image_nt_headers.Signature != IMAGE_NT_SIGNATURE)// PE00
-	{
-		LocalFree(ControlLoadedInMemory);
-		ControlLoadedInMemory = NULL;
-		MemoryNumBytes = 0;
-		return(-1);
-	}
-	DWORD SectionNum = image_nt_headers.FileHeader.NumberOfSections;
-	for (i = 0; i < SectionNum; i++)
-	{
-		CopyMemory(&image_section_header, ControlLoadedInMemory + dwRO_first_section + i * sizeof(IMAGE_SECTION_HEADER),
-			sizeof(IMAGE_SECTION_HEADER));
-		if ((strcmp((const char *)image_section_header.Name, ".data") == 0) ||
-			(strcmp((const char *)image_section_header.Name, ".rdata") == 0) ||
-			(strcmp((const char *)image_section_header.Name, ".text") == 0))
-
-		{
-			SectionsToCheck[NumberOfSectionsToCheck].Offset = image_section_header.PointerToRawData;
-			SectionsToCheck[NumberOfSectionsToCheck].Length = image_section_header.SizeOfRawData;
-			NumberOfSectionsToCheck++;
-		}
-	}
-	return(0);
-}
-
-//---------------------------------------------------------------------------
-static void StringsASCII(BYTE	 *Memory, DWORD Size)
-{
-	static char String[128];
-	int StringLength;
-
-	StringLength = 0;
-	if (Size > 0)
-	{
-		size_t i;
-		unsigned char c;
-		for (i = 0; i < Size; i++)
-		{
-			c = Memory[i];
-
-			if ((StringLength == 0) && (islower(c))) continue;
-			if (((!isalpha(c)) && (c != '_')) ||
-				(StringLength >= (sizeof(String) - 1)))
-			{
-				if (StringLength >= MIN_STRING_LENGTH)
-				{
-					String[StringLength++] = 0;
-					if (FindString(String) == NULL) InsertString(String);
-				}
-				StringLength = 0;
-			}
-			else String[StringLength++] = c;
-		}
-
-		if (StringLength >= MIN_STRING_LENGTH)
-		{
-			String[StringLength++] = 0;
-			if (FindString(String) == NULL) InsertString(String);
-			StringLength = 0;
+			GenerateArgument(pTypeInfo,
+				FunctionDescription->lprgelemdescParam[idx].tdesc,
+				arguments[argIdx], &refArgs[argIdx]);
 		}
 	}
 
-}
-//---------------------------------------------------------------------------
-static void StringsUnicode(BYTE	 *Memory, DWORD Size) {
-	static char String[128];
-	int StringLength;
-
-	StringLength = 0;
-	if (Size > 0)
+	const auto MethodInformationText = BuildMethodSignature(
+		pTypeInfo, FunctionDescription, InterfaceName, arguments);
+	if (MethodInformationText.empty())
 	{
-		size_t i;
-		unsigned char c1, c2;
-		for (i = 0; i < Size; i++)
-		{
-			c1 = Memory[i];
-			if ((i + 1) == Size)break;
-			c2 = Memory[i + 1];
-			if (c2 != 0) continue;
-			else i++;
-			if ((StringLength == 0) && (islower(c1))) continue;
-			if (((!isalpha(c1)) && (c1 != '_')) ||
-				(StringLength >= (sizeof(String) - 1)))
-			{
-				if (StringLength >= MIN_STRING_LENGTH)
-				{
-					String[StringLength++] = 0;
-					if (FindString(String) == NULL) InsertString(String);
-				}
-				StringLength = 0;
-			}
-			else String[StringLength++] = c1;
-		}
-
-		if (StringLength >= MIN_STRING_LENGTH)
-		{
-			String[StringLength++] = 0;
-			if (FindString(String) == NULL) InsertString(String);
-			StringLength = 0;
-		}
+		LogError("Error getting function signature.");
+		return GET_DOCUMENTATION_FAILED;
 	}
 
-}
-
-//---------------------------------------------------------------------------
-static TStringList * InsertString(char *String)
-{
-	TStringList *pNode = new TStringList;
-	if (pNode == NULL) return(NULL);
-	if ((pNode->String = _strdup(String)) == NULL)
+	PCSTR PropertyType;
+	switch (FunctionDescription->invkind)
 	{
-		delete pNode;
-		return(NULL);
-	}
-	if (StringListHead == NULL)
-	{
-		StringListHead = pNode;
-		pNode->pPrev = NULL;
-	}
-	else
-	{
-		StringListTail->pNext = pNode;
-		pNode->pPrev = StringListTail;
-	}
-	StringListTail = pNode;
-	pNode->pNext = NULL;
-	return(pNode);
-}
-//---------------------------------------------------------------------------
-static TStringList * FindString(char *String)
-{
-	TStringList *pNode;
-
-	if (String == NULL) return(NULL);
-
-	for (pNode = StringListHead; pNode != NULL; pNode = pNode->pNext)
-	{
-		if (strcmp(pNode->String, String) == 0) return(pNode);
-	}
-	return(NULL);
-}
-//---------------------------------------------------------------------------
-static void RemoveString(TStringList *pNode)
-{
-	if (pNode->pPrev == NULL)
-		StringListHead = pNode->pNext;
-	else
-		pNode->pPrev->pNext = pNode->pNext;
-	if (pNode->pNext == NULL)
-		StringListTail = pNode->pPrev;
-	else
-		pNode->pNext->pPrev = pNode->pPrev;
-	free(pNode->String);
-	delete pNode;
-}
-//---------------------------------------------------------------------------
-static void  DeleteStringList(void)
-{
-	while (StringListHead != NULL)
-		RemoveString(StringListHead);
-}
-//---------------------------------------------------------------------------
-//static void PrintStringList(void)
-//{
-//	TStringList *pNode;
-//	char tempTextBuffer[1024];
-//	for (pNode = StringListHead; pNode != NULL; pNode = pNode->pNext)
-//	{
-//		WriteText(hLogFile, "%s\r\n", pNode->String);
-//
-//	}
-//}
-//---------------------------------------------------------------------------
-static char * FindFile(char *FileName)
-{
-	size_t   length;
-	char     *buffer;
-	static    TCHAR FullFileName[MAX_PATH];
-	TCHAR trim[] = TEXT(" ");
-	if (FileExists(FileName))
-	{
-		strcpy(FullFileName, FileName);
-		return(FullFileName);
-	}
-	length = GetEnvironmentVariable("PATH", 0, 0);
-	if (length <= 0) return(NULL);
-	buffer = new char[length];
-	GetEnvironmentVariable("PATH", buffer, (DWORD)length);
-	char *directory = strtok(buffer, ";");
-	while (directory != NULL)
-	{
-		strcpy(FullFileName, directory);
-		StrTrim(FullFileName, trim);
-		length = strlen(FullFileName);
-		if (length <= 0)
-		{
-			delete[] buffer;
-			return(NULL);
-		}
-		if (FullFileName[length - 1] != '\\') strcat(FullFileName, "\\");
-		strcat(FullFileName, FileName);
-		ExpandEnvironmentVars(FullFileName, MAX_PATH);
-		DeQuoteString(FileName);
-		if (FileExists(FullFileName))
-		{
-			delete[] buffer;
-			return(FullFileName);
-		}
-		directory = strtok(NULL, ";");
-	}
-	delete[] buffer;
-
-	return NULL;
-
-}
-
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// STDMETHODIMP MyIPropertyBag::Read(LPCOLESTR , VARIANT *, IErrorLog *)             //            
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-
-STDMETHODIMP MyIPropertyBag::Read(LPCOLESTR pwszPropName, VARIANT *pVar, IErrorLog* /*pErrorLog*/)
-{
-	HaveParamsToTest |= GenerateVariantText(*pVar, pwszPropName, TestFileHandle);
-	return(E_FAIL);
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-///STDMETHODIMP MyIPropertyBag::Write(LPCOLESTR , VARIANT *)                          //
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-
-STDMETHODIMP MyIPropertyBag::Write(LPCOLESTR pwszPropName, VARIANT *pVar)
-{
-	HaveParamsToTest |= GenerateVariantText(*pVar, pwszPropName, TestFileHandle);
-	return(S_OK);
-}
-
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// int TestParamsPropertyBag(CLSID *clsid)                                           //            
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static int TestParamsPropertyBag(CLSID *clsid)
-{
-	HRESULT        hResult = E_FAIL;
-	IObjectSafety *pIObjectSafety = NULL;
-
-	HaveParamsToTest = FALSE;
-	strcat(lpPathBuffer, PARAMS_HTML);
-	DeleteTempFile(lpPathBuffer);
-
-	LargePropertyBagTestString = (char *)malloc(PROPERTY_BAG_STRING_LENGTH + 1);
-	memset(LargePropertyBagTestString, PROPERTY_BAG_STRING_CHARACTER, PROPERTY_BAG_STRING_LENGTH);
-	LargePropertyBagTestString[PROPERTY_BAG_STRING_LENGTH] = 0;
-
-
-	try
-	{
-
-		hResult = CoCreateInstance(*clsid, NULL, CLSCTX_LOCAL_SERVER | CLSCTX_INPROC_SERVER,
-			IID_IObjectSafety, (void**)&pIObjectSafety);
-	}
-	catch (...)
-	{
-		pIObjectSafety = NULL;
-	}
-	if ((hResult == S_OK) && (pIObjectSafety != NULL))
-	{
-
-		bool IPersist_SafeForUntrustedData = false;
-
-		try
-		{
-
-			hResult = pIObjectSafety->SetInterfaceSafetyOptions(IID_IPersistPropertyBag,
-				INTERFACESAFE_FOR_UNTRUSTED_DATA, INTERFACESAFE_FOR_UNTRUSTED_DATA);
-
-			if (hResult == S_OK) {
-				IPersist_SafeForUntrustedData = true;
-			}
-
-		}
-		catch (...)
-		{
-			pIObjectSafety->Release();
-			if (LargePropertyBagTestString)
-			{
-				free(LargePropertyBagTestString);
-				LargePropertyBagTestString = NULL;
-			}
-			return(COM_OBJECTSAFETY_SET_INTERFACE_OPT_FAULT);
-		}
-		if (IPersist_SafeForUntrustedData)
-		{
-			IPersistPropertyBag *pIPersistPropertyBag = NULL;
-			hResult = pIObjectSafety->QueryInterface(IID_IPersistPropertyBag, (void**)&pIPersistPropertyBag);
-			if (hResult == S_OK)
-			{
-				int RetVal = SUCCESS;
-				if ((TestFileHandle = Create_HTML_PARAMS_Test_File(lpPathBuffer, CLSID_String)) != NULL)
-				{
-					MyIPropertyBag iIPropertyBag;
-					pIPersistPropertyBag->InitNew();
-					try
-					{
-						pIPersistPropertyBag->Load(&iIPropertyBag, NULL);
-						pIPersistPropertyBag->Save(&iIPropertyBag, TRUE, TRUE);
-					}
-					catch (...) {}
-					pIPersistPropertyBag->Release();
-					pIObjectSafety->Release();
-					WriteText(TestFileHandle, "</object>\r\n");
-					CloseHandle(TestFileHandle);
-					if (HaveParamsToTest)
-					{
-						DWORD LoadTime = ComputeInitialLoadTime(lpPathBuffer);
-						if (LoadTime)
-							RetVal = IELoadUrlPARAMS(lpPathBuffer, LoadTime);
-					}
-				}
-				else
-				{
-					pIPersistPropertyBag->Release();
-					pIObjectSafety->Release();
-				}
-				if (LargePropertyBagTestString)
-				{
-					free(LargePropertyBagTestString);
-					LargePropertyBagTestString = NULL;
-				}
-
-				return(RetVal);
-			}
-			else
-			{
-				pIObjectSafety->Release();
-				if (LargePropertyBagTestString)
-				{
-					free(LargePropertyBagTestString);
-					LargePropertyBagTestString = NULL;
-				}
-				return(QUERY_INTERFACE_FOR_IPERSISTPROPERTYBAG_FAILED);
-			}
-
-		}
-		else
-		{
-			pIObjectSafety->Release();
-			if (LargePropertyBagTestString)
-			{
-				free(LargePropertyBagTestString);
-				LargePropertyBagTestString = NULL;
-			}
-			return(COM_OBJECT_NOT_SAFE_FOR_UNTRUSTED_DATA);
-		}
-
-	}
-	else
-	{
-		LPOLESTR CLSID_String_Wide;
-		LONG     RetValue;
-		HKEY     hKeyQ;
-		TCHAR    RegKey[1024];
-		bool     RegistryEntrySafeForInitializingPersistentData = false;
-
-		hResult = StringFromCLSID(*clsid, &CLSID_String_Wide);
-		if (FAILED(hResult))
-		{
-			return(STRING_FROM_CLSID_FAILED);
-		}
-		sprintf(RegKey, "Software\\Classes\\CLSID\\%ws\\Implemented Categories\\{7DD95802-9882-11CF-9FA9-00AA006C42C4}", CLSID_String_Wide);
-		RetValue = RegOpenKeyEx(HKEY_LOCAL_MACHINE, RegKey, 0, KEY_QUERY_VALUE, &hKeyQ);
-		RegCloseKey(hKeyQ);
-		if (RetValue == ERROR_SUCCESS) RegistryEntrySafeForInitializingPersistentData = true;
-		CoTaskMemFree(CLSID_String_Wide);
-		if (RegistryEntrySafeForInitializingPersistentData)
-		{
-			IPersistPropertyBag *pIPersistPropertyBag = NULL;
-			hResult = CoCreateInstance(*clsid, NULL, CLSCTX_LOCAL_SERVER | CLSCTX_INPROC_SERVER, IID_IPersistPropertyBag, (void**)&pIPersistPropertyBag);
-			if (hResult == S_OK)
-			{
-				int RetVal = SUCCESS;
-				if ((TestFileHandle = Create_HTML_PARAMS_Test_File(lpPathBuffer, CLSID_String)) != NULL)
-				{
-					MyIPropertyBag iIPropertyBag;
-					pIPersistPropertyBag->InitNew();
-					try
-					{
-						pIPersistPropertyBag->Load(&iIPropertyBag, NULL);
-						pIPersistPropertyBag->Save(&iIPropertyBag, TRUE, TRUE);
-					}
-					catch (...) {}
-					pIPersistPropertyBag->Release();
-					WriteText(TestFileHandle, "</object>\r\n");
-					CloseHandle(TestFileHandle);
-					if (HaveParamsToTest)
-					{
-						DWORD LoadTime = ComputeInitialLoadTime(lpPathBuffer);
-						if (LoadTime)
-							RetVal = IELoadUrlPARAMS(lpPathBuffer, LoadTime);
-					}
-				}
-				else  pIPersistPropertyBag->Release();
-				if (LargePropertyBagTestString)
-				{
-					free(LargePropertyBagTestString);
-					LargePropertyBagTestString = NULL;
-				}
-
-				return(RetVal);
-			}
-			else
-			{
-				if (LargePropertyBagTestString)
-				{
-					free(LargePropertyBagTestString);
-					LargePropertyBagTestString = NULL;
-				}
-				return(QUERY_INTERFACE_FOR_IPERSISTPROPERTYBAG_FAILED);
-			}
-
-		}
-		else
-		{
-			if (LargePropertyBagTestString)
-			{
-				free(LargePropertyBagTestString);
-				LargePropertyBagTestString = NULL;
-			}
-			return(COM_OBJECT_NOT_SAFE_FOR_UNTRUSTED_DATA);
-		}
-
-	}
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// int TestParamsViaBinaryScan(CLSID *clsid)                                          //            
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static int TestParamsViaBinaryScan(CLSID *clsid)
-{
-	HRESULT        hResult = E_FAIL;
-	IObjectSafety *pIObjectSafety = NULL;
-
-	strcat(lpPathBuffer, PARAMS_HTML);
-	DeleteTempFile(lpPathBuffer);
-
-	try
-	{
-
-		hResult = CoCreateInstance(*clsid, NULL, CLSCTX_LOCAL_SERVER | CLSCTX_INPROC_SERVER,
-			IID_IObjectSafety, (void**)&pIObjectSafety);
-	}
-	catch (...)
-	{
-		pIObjectSafety = NULL;
-	}
-	if ((hResult == S_OK) && (pIObjectSafety != NULL))
-	{
-
-		bool IPersist_SafeForUntrustedData = false;
-
-		try
-		{
-
-			hResult = pIObjectSafety->SetInterfaceSafetyOptions(IID_IPersistPropertyBag,
-				INTERFACESAFE_FOR_UNTRUSTED_DATA, INTERFACESAFE_FOR_UNTRUSTED_DATA);
-
-			if (hResult == S_OK) {
-				IPersist_SafeForUntrustedData = true;
-			}
-			pIObjectSafety->Release();
-		}
-		catch (...)
-		{
-			pIObjectSafety->Release();
-			return(COM_OBJECTSAFETY_SET_INTERFACE_OPT_FAULT);
-		}
-		if (IPersist_SafeForUntrustedData)
-		{
-			if (Generate_HTML_PARAMS_Test_File(lpPathBuffer, CLSID_String) != 0)  return(FAILED_TO_CREATE_IE_TEST_FILE);
-			DWORD LoadTime = ComputeInitialLoadTime(lpPathBuffer);
-			if (LoadTime) return(IELoadUrlPARAMS(lpPathBuffer, LoadTime));
-			else return(FAILED_TO_CREATE_IE_TEST_FILE);
-		}
-		else return(COM_OBJECT_NOT_SAFE_FOR_UNTRUSTED_DATA);
-	}
-	else
-	{
-		LPOLESTR CLSID_String_Wide;
-		LONG     RetValue;
-		HKEY     hKeyQ;
-		TCHAR    RegKey[1024];
-		bool     RegistryEntrySafeForInitializingPersistentData = false;
-
-		hResult = StringFromCLSID(*clsid, &CLSID_String_Wide);
-		if (FAILED(hResult))
-		{
-			return(STRING_FROM_CLSID_FAILED);
-		}
-		sprintf(RegKey, "Software\\Classes\\CLSID\\%ws\\Implemented Categories\\{7DD95802-9882-11CF-9FA9-00AA006C42C4}", CLSID_String_Wide);
-		RetValue = RegOpenKeyEx(HKEY_LOCAL_MACHINE, RegKey, 0, KEY_QUERY_VALUE, &hKeyQ);
-		RegCloseKey(hKeyQ);
-		if (RetValue == ERROR_SUCCESS) RegistryEntrySafeForInitializingPersistentData = true;
-		CoTaskMemFree(CLSID_String_Wide);
-		if (RegistryEntrySafeForInitializingPersistentData)
-		{
-			if (Generate_HTML_PARAMS_Test_File(lpPathBuffer, CLSID_String) != 0)  return(FAILED_TO_CREATE_IE_TEST_FILE);
-			DWORD LoadTime = ComputeInitialLoadTime(lpPathBuffer);
-			if (LoadTime) return(IELoadUrlPARAMS(lpPathBuffer, LoadTime));
-			else return(FAILED_TO_CREATE_IE_TEST_FILE);
-		}
-		else
-		{
-			return(COM_OBJECT_NOT_SAFE_FOR_UNTRUSTED_DATA);
-		}
-
-	}
-}
-//---------------------------------------------------------------------------
-
-static BOOL GenerateVariantText(VARIANT &var, LPCOLESTR pwszPropName, HANDLE hfile)
-{
-	switch (var.vt)
-	{
-	case VT_BSTR:
-	case VT_I1:
-	case VT_I2:
-	case VT_I4:
-	case VT_I8:
-	case VT_UI1:
-	case VT_UI2:
-	case VT_UI4:
-	case VT_UI8:
-	case VT_R4:
-	case VT_R8:
-	case VT_BOOL:
-	case VT_DATE:
+	case INVOKE_FUNC:
+		PropertyType = "Method";
+		break;
+	case INVOKE_PROPERTYGET:
+		PropertyType = "Getter";
+		break;
+	case INVOKE_PROPERTYPUT:
+		PropertyType = "Putter";
+		break;
+	case INVOKE_PROPERTYPUTREF:
+		PropertyType = "PutRef";
 		break;
 	default:
-		return(FALSE);
+		LogError("Unexpected function type: %i - %s", FunctionDescription->invkind,
+			MethodInformationText.c_str());
+		return SUCCESS;
 	}
 
-
-	WriteText(hfile, "<PARAM NAME=\"%ws\" VALUE=\"", pwszPropName);
-
-	switch (var.vt)
+	if (PrintOnly)
 	{
-	case VT_BSTR:
-		WriteText(hfile, LargePropertyBagTestString);
-		break;
-	case VT_I1:
-	case VT_I2:
-	case VT_I4:
-	case VT_I8:
-		WriteText(hfile, "-1");
-		break;
-	case VT_UI1:
-		WriteText(hfile, "0xFF");
-		break;
-	case VT_UI2:
-		WriteText(hfile, "0xFFFF");
-		break;
-	case VT_UI4:
-		WriteText(hfile, "0xFFFFFFFF");
-		break;
-
-	case VT_UI8:
-		WriteText(hfile, "0xFFFFFFFFFFFFFFFF");
-		break;
-
-	case VT_R4:
-	case VT_R8:
-		WriteText(hfile, "0.0");
-		break;
-	case VT_BOOL:
-		WriteText(hfile, "10000");
-		break;
-	case  VT_DATE:
-		WriteText(hfile, "-9999999999999999999999.99999999");
-		break;
-
+		LogInfo("%s: %s", PropertyType, MethodInformationText.c_str());
+		return SUCCESS;
 	}
 
-	WriteText(hfile, "\">\r\n");// , pwszPropName);
-	return(TRUE);
-}
-
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// BOOL CALLBACK EnumChildWindowCallback(HWND hwnd, LPARAM lParam)                   //            
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static BOOL CALLBACK EnumChildWindowCallback(HWND hwnd, LPARAM lParam)
-{
-	TCHAR ClassName[200], TextBuffer[200];
-
-	GetClassName(hwnd, ClassName, sizeof(ClassName));
-	GetWindowText(hwnd, TextBuffer, sizeof(TextBuffer));
-	_tcslwr(ClassName);
-	_tcslwr(TextBuffer);
-
-	if (lParam == NULL)
+	// Invoke method...
+	VARIANT returnValue;
+	::VariantInit(&returnValue);
+	bool COMObjectExceptionOccurred = true;
+	try
 	{
-		if (_tcsstr(ClassName, "internet explorer_server"))
+		DISPPARAMS dispParams = {};
+		dispParams.cArgs = arguments.size();
+		dispParams.rgvarg = arguments.empty() ? nullptr : arguments.data();
+		DISPID dispidPut = DISPID_PROPERTYPUT;
+		if (FunctionDescription->invkind == INVOKE_PROPERTYPUT ||
+			FunctionDescription->invkind == INVOKE_PROPERTYPUTREF)
 		{
-			if (EnumChildWindows((HWND)hwnd, EnumChildWindowCallback, (LPARAM)0xFEED))
-			{
-
-			}
-
+			dispParams.rgdispidNamedArgs = &dispidPut;
+			dispParams.cNamedArgs = 1;
 		}
-	}
-	else
-	{
-#if 0
-		if (_tcsstr(ClassName, "internet explorer_objectoverlay"))
+		UINT dispArgErr = ~0u; // note: arguments are in reverse order relative to
+							   // FunctionDescription
+
+		LogInfo("Invoking %s: %s", PropertyType, MethodInformationText.c_str());
+		const auto dispRes =
+			pTypeInfo->Invoke(pIDispatch, FunctionDescription->memid,
+				static_cast<WORD>(FunctionDescription->invkind),
+				&dispParams, &returnValue,
+				nullptr, //&dispExceptInfo,
+				&dispArgErr);
+
+		// Check the dispatch result to make sure we didn't mess up the invocation
+		constexpr auto _DISP_E_FIRST = DISP_E_UNKNOWNINTERFACE;
+		constexpr auto _DISP_E_LAST = DISP_E_BUFFERTOOSMALL;
+		if ((_DISP_E_FIRST <= dispRes && dispRes <= _DISP_E_LAST) &&
+			dispRes != DISP_E_EXCEPTION && dispRes != DISP_E_OVERFLOW &&
+			dispRes != DISP_E_DIVBYZERO /* &&
+				dispRes != DISP_E_BADVARTYPE*/)
 		{
-#endif
-			RECT Rect;
-			if (GetClientRect(hwnd, &Rect))
+			std::string msg;
+			if (dispRes == DISP_E_TYPEMISMATCH || dispRes == DISP_E_PARAMNOTFOUND)
 			{
-				POINT Point;
-				Point.y = (Rect.bottom + Rect.top) / 2;
-				Point.x = (Rect.left + Rect.right) / 2;
-				if (ClientToScreen(hwnd, &Point))
+				if (dispArgErr < arguments.size())
 				{
-					double fScreenWidth = ::GetSystemMetrics(SM_CXSCREEN) - 1;
-					double fScreenHeight = ::GetSystemMetrics(SM_CYSCREEN) - 1;
-					double fx = Point.x*(65535.0f / fScreenWidth);
-					double fy = Point.y*(65535.0f / fScreenHeight);
-					mouse_event(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, (DWORD)fx, (DWORD)fy, 0, 0);
-					mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
-					mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+					msg = Format("%s on argument %u.",
+						dispRes == DISP_E_TYPEMISMATCH ? "DISP_E_TYPEMISMATCH"
+						: "DISP_E_PARAMNOTFOUND",
+						arguments.size() - dispArgErr - 1);
 				}
 			}
-#if 0
-			}
-#endif
+
+			LogError("Dispatch Error: HRESULT: 0x%08X: %s", dispRes, msg.c_str());
 		}
-	return(TRUE);
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static BOOL CALLBACK EnumWindowsCallback(HWND hwnd, LPARAM lParam)                //            
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static BOOL CALLBACK EnumWindowsCallback(HWND hwnd, LPARAM /*lParam*/)
-{
-	if ((GetWindowLong(hwnd, GWL_STYLE) & WS_VISIBLE))
-	{
-		TCHAR ClassName[200];
-		GetClassName(hwnd, ClassName, sizeof(ClassName));
-		if (_tcsstr(ClassName, "IEFrame"))
+		else
 		{
-			if (EnumChildWindows((HWND)hwnd, EnumChildWindowCallback, (LPARAM)NULL))
-			{
+			LogInfo("Result: 0x%08X.", dispRes);
+		}
 
+		// Recurse on output interfaces...
+		if (SUCCEEDED(dispRes))
+		{
+			const auto getDispatch = [&](const VARIANT &arg)
+			{
+				// The value may be garbage, so be prepared...
+				IDispatchPtr dispatch;
+				try
+				{
+					IUnknown *unk = nullptr;
+					if ((arg.vt & VT_TYPEMASK) == VT_DISPATCH)
+						unk = (arg.vt & VT_BYREF) ? arg.ppdispVal ? *arg.ppdispVal : nullptr
+						: arg.pdispVal;
+					else if ((arg.vt & VT_TYPEMASK) == VT_UNKNOWN)
+						unk = (arg.vt & VT_BYREF) ? arg.ppunkVal ? *arg.ppunkVal : nullptr
+						: arg.punkVal;
+					dispatch = unk;
+				}
+				catch (const _com_error &)
+				{
+				}
+				catch (const win32_exception &ex)
+				{
+					UNREFERENCED_PARAMETER(ex);
+				}
+				return dispatch;
+			};
+
+			const auto retValDispatch = getDispatch(returnValue);
+			if (retValDispatch && retValDispatch != pIDispatch)
+			{
+				LogInfo("Recursing on return value:\n"
+					"=============================");
+				const auto res =
+					TestDispatchInterface(retValDispatch, PrintOnly, Level + 1);
+				if (res == COM_OBJECT_EXECEPTION_OCCURRED)
+					COMObjectExceptionOccurred = true;
+				LogInfo("=============================\n"
+					"Resuming interface %s.",
+					InterfaceName);
+			}
+
+			for (auto idx = 0u; idx < arguments.size(); ++idx)
+			{
+				const auto paramFlags =
+					FunctionDescription->lprgelemdescParam[idx].paramdesc.wParamFlags;
+				if (!(paramFlags & (PARAMFLAG_FOUT | PARAMFLAG_FRETVAL)))
+					continue;
+
+				const auto argDispatch =
+					getDispatch(arguments[arguments.size() - idx - 1]);
+				if (argDispatch && argDispatch != pIDispatch &&
+					argDispatch != retValDispatch)
+				{
+					LogInfo("Recursing on output argument %d:\n"
+						"=============================",
+						idx);
+					const auto res =
+						TestDispatchInterface(argDispatch, PrintOnly, Level + 1);
+					if (res == COM_OBJECT_EXECEPTION_OCCURRED)
+						COMObjectExceptionOccurred = true;
+					LogInfo("=============================\n"
+						"Resuming interface %s.",
+						InterfaceName);
+				}
 			}
 		}
 	}
-	return(TRUE);
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-///  static void ActivateControlInIE(void)                                            //
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static void ActivateControlInIE(void)
-{
-	EnumWindows(EnumWindowsCallback, 0);
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-///  static DWORD ComputeInitialLoadTime(char *FileName)                              //
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-
-static DWORD ComputeInitialLoadTime(char *FileName)
-{
-	DWORD TimeInMs = 0;
-	LARGE_INTEGER FileSize;
-
-	HANDLE h = CreateFile(FileName, GENERIC_READ, FILE_SHARE_READ, NULL,  // security attributes
-		OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-	if (!h) return(TimeInMs);
-
-	if (GetFileSizeEx(h, &FileSize))
+	catch (const win32_exception &e)
 	{
-		TimeInMs = ((DWORD)(FileSize.QuadPart / PARAMS_LOAD_MBYTES_PER_SEC) + PARAMS_LOAD_TIMEOUT_MIN);
-	}
-	CloseHandle(h);
-	return(TimeInMs);
-}
-//---------------------------------------------------------------------------
-
-//void PrintVariant(VARIANT &var)
-//{
-//	if (var.vt == VT_UI1)
-//	{
-//		WriteText(hLogFile, "VT_UI1:%u\r\n", var.bVal);
-//	}
-//	else if (var.vt == VT_I2)
-//	{
-//		WriteText(hLogFile, "VT_I2:%d\r\n", var.iVal);
-//	}
-//	else if (var.vt == VT_I4)
-//	{
-//		WriteText(hLogFile, "I4:%d\r\n", var.lVal);
-//	}
-//	else if (var.vt == VT_R4)
-//	{
-//		WriteText(hLogFile, "VT_R4:%f\r\n", var.fltVal);
-//	}
-//	else if (var.vt == VT_R8)
-//	{
-//		WriteText(hLogFile, "VT_R8:%lf\r\n", var.dblVal);
-//	}
-//	else if (var.vt == VT_BOOL)
-//	{
-//		if (var.boolVal == 0)
-//		{
-//			WriteText(hLogFile, "VT_BOOL:false\r\n");
-//		}
-//		else
-//		{
-//			WriteText(hLogFile, "VT_BOOL:true\r\n");
-//		}
-//	}
-//	else if (var.vt == VT_BSTR)
-//	{
-//		WriteText(hLogFile, "VT_BSTR:%0.10ls....{%d}\r\n", var.bstrVal, SysStringLen(var.bstrVal));
-//	}
-//	else WriteText(hLogFile, "[UNKNOWN]\r\n");
-//}
-
-#define COM_KILL_BIT TEXT("SOFTWARE\\Microsoft\\Internet Explorer\\ActiveX Compatibility")
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// int GetKillBit(WCHAR *CLSID_Str_Wide)                                             //            
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static int GetKillBit(WCHAR *CLSID_Str_Wide)
-{
-	TCHAR KeyString[1024];
-	HKEY  hKey;
-	DWORD CompatibilityFlags, Type, CompatibilityFlagsSize = sizeof(CompatibilityFlags);
-	int  RetVal = -1;
-	LONG RegRtnVal;
-
-	sprintf(KeyString, "%s\\%ws", COM_KILL_BIT, CLSID_Str_Wide);
-	if ((RegRtnVal = RegOpenKeyEx(HKEY_LOCAL_MACHINE,
-		KeyString,
-		0, KEY_QUERY_VALUE, &hKey)) != ERROR_SUCCESS)
-	{
-		if (RegRtnVal != ERROR_FILE_NOT_FOUND)
-			printf("RegOpenKeyEx %d failed\n", RegRtnVal);
-		return(RetVal);
-	}
-	if ((RegRtnVal = RegQueryValueEx(hKey, TEXT("Compatibility Flags"), NULL, &Type, (BYTE *)&CompatibilityFlags,
-		&CompatibilityFlagsSize)) == ERROR_SUCCESS)
-	{
-		if ((CompatibilityFlags & 0x00000400) == 0x00000400) RetVal = 1;
-		else RetVal = 0;
-	}
-	else
-	{
-		if (RegRtnVal != ERROR_FILE_NOT_FOUND)
-			printf("RegQueryValueEx %d failed\n", RegRtnVal);
+		COMObjectExceptionOccurred = true;
+		LogError("Win32 exception while invoking %s: %s:\n"
+			"%s",
+			PropertyType, MethodInformationText.c_str(), e.what());
 	}
 
-	RegCloseKey(hKey);
-
-	return(RetVal);
-}
-
-//---------------------------------------------------------------------------
-//static void dumphex(unsigned char *dptr, int size) {
-//
-//	int cnt, counter = 0;
-//
-//
-//	while (size > 0) {
-//
-//		(size > 16) ? cnt = 16 : cnt = size;
-//
-//		printf("%08lx   ", counter);
-//
-//		for (int i = 0; i < cnt; i++) printf("%02x ", dptr[counter + i]);
-//
-//		for (int i = 0; i < 16 - cnt; i++) printf("   ");
-//
-//		printf(" ");
-//
-//		for (int i = 0; i < cnt; i++)
-//
-//			(isprint(dptr[counter + i])) ? printf("%c", dptr[counter + i]) : printf(".");
-//
-//		printf("\n");
-//
-//		counter += 16;
-//
-//		size -= 16;
-//
-//	}
-//
-//	return;
-//
-//}
-//---------------------------------------------------------------------------
-static int DeQuoteString(char * String)
-{
-	char *In, *Out;
-
-	In = String;
-	Out = In;
-	size_t Length = strlen(String) + 1;
-
-	for (size_t i = 0; i < Length; i++, In++)
+	// Release the Return Value
+	try
 	{
-		if (*In != '"')   *Out++ = *In;
+		::VariantClear(&returnValue);
 	}
-	return ((int)(Out - String));
-}
-//---------------------------------------------------------------------------
-#if 0
-static char * VariantToString(VARIANT &var)
-{
-
-}
-//---------------------------------------------------------------------------
+	catch (const win32_exception &e)
+	{
+#if LOG_CRASH_ON_FREE
+		COMObjectExceptionOccurred = true;
+		LogError("Win32 exception while invoking ::VariantClear on return value:\n"
+			"%s",
+			e.what());
 #endif
+	}
+
+	// Release the arguments
+	for (auto idx = 0u; idx < arguments.size(); ++idx)
+	{
+		try
+		{
+			::VariantClear(&arguments[arguments.size() - idx - 1]);
+			::VariantClear(&refArgs[arguments.size() - idx - 1]);
+		}
+		catch (const win32_exception &e)
+		{
+#if LOG_CRASH_ON_FREE
+			COMObjectExceptionOccurred = true;
+			LogError("Win32 exception while invoking ::VariantClear on argument %u:\n"
+				"%s",
+				idx, e.what());
+#endif
+		}
+	}
+
+	if (COMObjectExceptionOccurred)
+		return COM_OBJECT_EXECEPTION_OCCURRED;
+	return SUCCESS;
+}
+
+int TestDispatchInterface(_In_ IDispatch *pIDispatch, bool PrintOnly,
+	DWORD Level /*= 0*/)
+{
+	if (Level > kMaxRecurse)
+	{
+		LogInfo("Reached maximum recursion level (%u).", Level);
+		return SUCCESS;
+	}
+
+	bool COMObjectExceptionOccurred = false;
+	try
+	{
+		ITypeInfoPtr pTypeInfo;
+		TYPEATTR *pTypeAttr = nullptr;
+		if (FAILED(pIDispatch->GetTypeInfo(0, 0, &pTypeInfo)) ||
+			FAILED(pTypeInfo->GetTypeAttr(&pTypeAttr)))
+		{
+			LogError("GetTypeInfo Failed.");
+			return GET_TYPE_INFO_FAILED;
+		}
+		ON_EXIT_SCOPE(pTypeInfo->ReleaseTypeAttr(pTypeAttr));
+
+		_bstr_t InterfaceName;
+		pTypeInfo->GetDocumentation(MEMBERID_NIL, InterfaceName.GetAddress(),
+			nullptr, nullptr, nullptr);
+
+		for (auto idx = 0u; idx < pTypeAttr->cFuncs; ++idx)
+		{
+			FUNCDESC *FunctionDescription = nullptr;
+			const auto hResult = pTypeInfo->GetFuncDesc(idx, &FunctionDescription);
+			if (hResult != S_OK)
+			{
+				if (hResult == E_OUTOFMEMORY)
+					LogError("GetFuncDesc Failed (E_OUTOFMEMORY)");
+				else if (hResult == E_INVALIDARG)
+					LogError("GetFuncDesc Failed (E_INVALIDARG)");
+				else
+					LogError("GetFuncDesc Failed (0x%08X)", hResult);
+				continue;
+			}
+			ON_EXIT_SCOPE(pTypeInfo->ReleaseFuncDesc(FunctionDescription));
+
+			if (FunctionDescription->wFuncFlags & FUNCFLAG_FRESTRICTED)
+				continue; // function not accessible from macro languages.
+
+			const auto res =
+				TestMemberFunc(pIDispatch, PrintOnly, pTypeInfo, FunctionDescription,
+					Narrow(InterfaceName).c_str(), Level);
+			if (res == COM_OBJECT_EXECEPTION_OCCURRED)
+				COMObjectExceptionOccurred = true;
+		}
+	}
+	catch (const win32_exception &e)
+	{
+		COMObjectExceptionOccurred = true;
+		LogError("Win32 exception: %s", e.what());
+	}
+
+	if (COMObjectExceptionOccurred)
+		return COM_OBJECT_EXECEPTION_OCCURRED;
+	return SUCCESS;
+}

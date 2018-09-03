@@ -1,512 +1,335 @@
 // Dranzer.cpp : Defines the entry point for the console application.
 //
-
 #include "stdafx.h"
-#include <tlhelp32.h>
-#include "WindowMonitor.h"
-#include "KillBit.h"
+
 #include "GetCOM_Objects.h"
-#include "TestErrors.h"
 #include "KillApplication.h"
+#include "TestErrors.h"
+#include "WindowMonitor.h"
+#include "on_exit_scope.h"
+
+#include <sal.h>
+
+#include <cassert>
+#include <fstream>
+#include <iostream>
+#include <set>
+#include <string>
 
 #define RELEASE_VERSION "RELEASE_19"
 #define COM_OBJECT_TEST_TIME_LIMIT_IN_SECONDS 80
 #if _DEBUG
-#define TESTANDREPORT TEXT("..//..//TestAndReport//Debug//TestAndReport.exe")
+#define TESTANDREPORT "..//..//TestAndReport//Debug//TestAndReport.exe"
 #else
-#define TESTANDREPORT TEXT("..//..//TestAndReport//Release//TestAndReport.exe")
+#define TESTANDREPORT "..//..//TestAndReport//Release//TestAndReport.exe"
 #endif
-#define HASH_TABLE_SIZE 256
 
-typedef struct _Hash_Entry
+static void PrintUsage(PSTR argv[])
 {
-	CLSID                clsid;
-	struct _Hash_Entry * Next;
-} Hash_Entry;
+	std::cout
+		<< "Usage: " << argv[0] << " <options> \n"
+		<< "Options:\n"
+		<< "        -o <outputfile>   - Output Filename\n"
+		<< "        -i <inputfile>    - Use input file CLSID list\n"
+		<< "        -d <notestfile>   - Use don't test CLSID List\n"
+		<< "        -g                - Generate base COM list\n"
+		<< "        -l                - Generate Interface Listings\n"
+		<< "        -t                - Test Interfaces Properties and Methods\n"
+		<< "        -n                - Print COM object information\n";
+}
 
-typedef struct
+struct less_clsid
 {
-	unsigned int        Table_Size;
-	Hash_Entry       ** Hash_Tables;
-} Hash_Table;
+	bool operator()(const CLSID& a, const CLSID& b) const noexcept
+	{
+		return &a == &b || memcmp(&a, &b, sizeof(a)) == 0;
+	}
+};
 
-typedef enum
+enum TExecutionMode
 {
 	NONE,
 	GEN_BASE_COM_LIST,
-	GEN_KILL_BIT_LIST,
 	GEN_INTERFACE_LISTINGS,
 	TEST_INTERFACES,
-	LOAD_IN_IE,
-	PARAMS_IN_IE_PROPBAG,
-	PARAMS_IN_IE_BINARY_SCAN,
 	EMIT_VERSION_INFO,
-	PRINT_COM_OBJECT_INFO
-} TExecutionMode;
+};
 
-static DWORD WINAPI  COM_TestThreadProcRegistry(LPVOID arg);
-static DWORD WINAPI  COM_TestThreadProcInputFile(LPVOID arg);
-static int           TestCOMObject(COM_ObjectInfoType *COM_ObjectInfo, char *LogFile);
-static BOOL          CtrlHandler(DWORD fdwCtrlType);
-static void          PrintError(DWORD dw);
-static void          WriteTextToLog(char *Text);
-static int           AppendFile(HANDLE hAppend, char *FileNameToAppend);
-static void          PrintUsage(_TCHAR* argv[]);
-static void          ParseArguments(int argc, _TCHAR* argv[]);
-static void          DeleteTempResultsFile(char *FileName);
-static void          GenerateComBaseline(char *FileName, bool List_Objects_Killbit);
-static void          EmitVersionInfo(char *FileName);
-static               Hash_Table * Create_Hash_Table(unsigned int Size);
-static unsigned int  HashCLSID(CLSID clsid);
-static void          Free_Hash_Table(Hash_Table * Table);
-static int           Insert_Hash_Table(Hash_Table * Table, CLSID clsid);
-static int           Remove_Hash_Table(Hash_Table * Table, CLSID clsid);
-static CLSID *       Lookup_Hash(Hash_Table * Table, CLSID clsid);
-static void          MoveResultsFile(WCHAR *CLSID_Str_Wide);
-static void          DeleteHTMLResults(void);
-TExecutionMode       ExecutionMode = NONE;
-static HANDLE        TestHarnessKillEvent = NULL;
-static HANDLE        hFile = NULL;
-static DWORD         NumberOfFailedComTests = 0;
-static DWORD         NumberOfHungComObjects = 0;
-static DWORD         NumberOfComObjects = 0;
-static DWORD         NumberOfComObjectsWithKillBit = 0;
-static DWORD         NumberOfComObjectsWithoutKillBit = 0;
-static DWORD         NumberOfComObjectsNotScriptSafe = 0;
-static DWORD         NumberOfComObjectsNotSafeForInitialization = 0;
-static DWORD         NumberOfComObjectsWithOutTypeInfo = 0;
-static DWORD         NumberOfComPassTest = 0;
-static DWORD         OtherCOM_Errors = 0;
-static BOOL          UseInputFile = false;
-static BOOL          UseNoTestList = false;
-static FILE         *InputFile = NULL;
-static Hash_Table   *CLSID_Hash_Table = NULL;
-static char          szTempName[MAX_PATH];
-static char          lpPathBuffer[MAX_PATH - 14 + 1];
-static TProcessSnapShot *SnapShotOfProcesses = NULL;
+// Forward declarations
+std::wstring Widen(PCSTR pStr, int cbStr = -1);
+std::wstring Widen(const std::string &str);
+std::string Narrow(PCWSTR pStr, int cchStr = -1);
+std::string Narrow(const std::wstring &str);
+std::string Format(_Printf_format_string_ PCSTR Format, ...);
+void LogInfo(_Printf_format_string_ PCSTR Format, ...);
+void LogError(_Printf_format_string_ PCSTR Format, ...);
 
-int _tmain(int argc, _TCHAR* argv[])
+static void ParseArguments(int argc, PSTR argv[]);
+static void GenerateComBaseline();
+static void EmitVersionInfo();
+static int TestCOMObject(COM_ObjectInfoType *COM_ObjectInfo, PCSTR LogFile);
+static DWORD WINAPI COM_TestThreadProcRegistry(LPVOID arg);
+static DWORD WINAPI COM_TestThreadProcInputFile(LPVOID arg);
+static int LogFileContents(PCSTR FileNameToAppend);
+static void DeleteTempResultsFile(PCSTR FileName);
+
+TExecutionMode g_ExecutionMode = NONE;
+static std::string g_InputFileName;
+static std::string g_OutputFileName;
+static std::string g_ExcludeFileName;
+
+static HANDLE g_LogFileHandle = nullptr;
+static std::set<CLSID, less_clsid> g_ExcludeCLSIDs;
+static HANDLE g_TestHarnessKillEvent = nullptr;
+static TProcessSnapShot *g_SnapShotOfProcesses = nullptr;
+static DWORD g_NumberOfFailedComTests = 0;
+static DWORD g_NumberOfHungComObjects = 0;
+static DWORD g_NumberOfComObjects = 0;
+static DWORD g_NumberOfComObjectsNotSafeForInitialization = 0;
+static DWORD g_NumberOfComObjectsWithOutTypeInfo = 0;
+static DWORD g_NumberOfComPassTest = 0;
+static DWORD g_NumberOfOtherCOM_Errors = 0;
+
+int main(int argc, PSTR argv[])
 {
-	HANDLE  COM_TestThread = NULL;
-	DWORD   id;
-	DWORD   WaitResult;
-	char    TextWrite[1024];
-	DWORD   dwRetVal;
-
-
-	// Get the temp path.
-	dwRetVal = GetTempPath(sizeof(lpPathBuffer),     // length of the buffer
-		lpPathBuffer);      // buffer for path 
-	if (dwRetVal == 0)
-	{
-		printf("GetTempPath failed with error %d.\n", GetLastError());
-		return (-1);
-	}
-	else if (dwRetVal > sizeof(lpPathBuffer))
-	{
-		printf("GetTempPath buffer too small\n");
-		return (-1);
-	}
-
-
-
 	ParseArguments(argc, argv);
 
-
-	TestHarnessKillEvent = CreateEvent(NULL,  // No security attributes
-		FALSE, // Manual-reset event
-		FALSE, // Initial state is signaled
-		NULL); // Object name
-
-	if (TestHarnessKillEvent == NULL)
+	g_LogFileHandle = nullptr;
+	if (!g_OutputFileName.empty())
 	{
-		printf("Failed to Create Kill Event Object\n");
-		return(-1);
+		g_LogFileHandle = ::CreateFileA(
+			g_OutputFileName.c_str(),
+			GENERIC_WRITE,         // open for writing
+			0,                     // do not share
+			nullptr,               // default security
+			CREATE_ALWAYS,         //
+			FILE_ATTRIBUTE_NORMAL, // normal file
+			nullptr);              // no attr. template
+
+		if (g_LogFileHandle == INVALID_HANDLE_VALUE)
+		{
+			g_LogFileHandle = nullptr;
+			LogError("Could not open output file: %u", ::GetLastError());
+			exit(2);
+		}
+	}
+	ON_EXIT_SCOPE(if (g_LogFileHandle) ::CloseHandle(g_LogFileHandle));
+
+	if (g_ExecutionMode == GEN_BASE_COM_LIST)
+	{
+		GenerateComBaseline();
+		exit(0);
 	}
 
-	SetConsoleCtrlHandler((PHANDLER_ROUTINE)CtrlHandler, TRUE);
-	if ((ExecutionMode != LOAD_IN_IE) &&
-		(ExecutionMode != PARAMS_IN_IE_PROPBAG) &&
-		(ExecutionMode != PARAMS_IN_IE_BINARY_SCAN)) WindowMonitorStart(true);
-	else WindowMonitorStart(false);
-	if ((SnapShotOfProcesses = GetSnapShotOfProcesses()) == NULL)
+	if (g_ExecutionMode == EMIT_VERSION_INFO)
 	{
-		printf("Could not get snap shot of running processes\n");
+		EmitVersionInfo();
+		exit(0);
+	}
+
+	if (!g_ExcludeFileName.empty())
+	{
+		std::ifstream NoTestInputFile(g_ExcludeFileName.c_str());
+		if (!NoTestInputFile)
+		{
+			LogError("Can't open no test input file %s", g_ExcludeFileName.c_str());
+			exit(1);
+		}
+
+		std::string line;
+		for (size_t lineNo = 0; NoTestInputFile; ++lineNo)
+		{
+			//read the next line...
+			line.clear();
+			line.reserve(1024);
+			for (char c; NoTestInputFile.get(c);)
+			{
+				//break on LF or CR+LF
+				if (c == '\r' && NoTestInputFile.peek() == '\n')
+					NoTestInputFile.get(c);
+				if (c == '\n')
+					break;
+				line.push_back(c);
+			}
+			if (line.empty())
+				continue;
+
+			CLSID clsid;
+			if (::CLSIDFromString(Widen(line).c_str(), &clsid) != NOERROR)
+			{
+				LogError("Error in 'no test input' file at line %u : %s", lineNo, line.c_str());
+				exit(1);
+			}
+			g_ExcludeCLSIDs.insert(clsid);
+		}
+	}
+
+	g_TestHarnessKillEvent = ::CreateEventA(nullptr,  // No security attributes
+		false, // Manual-reset event
+		false, // Initial state is signaled
+		nullptr); // Object name
+	if (!g_TestHarnessKillEvent)
+	{
+		LogError("Failed to Create Kill Event Object");
 		return (-1);
 	}
+	ON_EXIT_SCOPE(::CloseHandle(g_TestHarnessKillEvent));
 
-	if (UseInputFile)
-		COM_TestThread = CreateThread(NULL, 0, COM_TestThreadProcInputFile, (LPVOID)NULL, CREATE_SUSPENDED, &id);
+	::SetConsoleCtrlHandler([](DWORD) { return ::SetEvent(g_TestHarnessKillEvent); }, true);
 
-	else COM_TestThread = CreateThread(NULL, 0, COM_TestThreadProcRegistry, (LPVOID)NULL, CREATE_SUSPENDED, &id);
-	if (COM_TestThread == NULL)
+	WindowMonitorStart(true);
+
+	if ((g_SnapShotOfProcesses = GetSnapShotOfProcesses()) == nullptr)
 	{
-		CloseHandle(TestHarnessKillEvent);
-		return(-1);
+		LogError("Could not get snap shot of running processes.");
+		return (-1);
 	}
-	ResumeThread(COM_TestThread);
-	WaitResult = WaitForSingleObject(COM_TestThread, INFINITE);
-	CloseHandle(COM_TestThread);
-	CloseHandle(TestHarnessKillEvent);
-	if (UseInputFile) fclose(InputFile);
+	ON_EXIT_SCOPE(FreeSnapShot(g_SnapShotOfProcesses));
+
+	const auto threadProc = !g_InputFileName.empty()
+		? COM_TestThreadProcInputFile
+		: COM_TestThreadProcRegistry;
+	DWORD id;
+	const auto COM_TestThread = ::CreateThread(nullptr, 0, threadProc, nullptr, CREATE_SUSPENDED, &id);
+	if (COM_TestThread == nullptr)
+	{
+		LogError("Failed to create worker thread.");
+		return -1;
+	}
+	::ResumeThread(COM_TestThread);
+	::WaitForSingleObject(COM_TestThread, INFINITE);
+	::CloseHandle(COM_TestThread);
+
 	WindowMonitorStop();
-	FreeSnapShot(SnapShotOfProcesses);
 
 	// emit test engine version based on svn build revision
+	LogInfo("*******************************************************************************");
+	LogInfo("Test Engine Version: $Rev: 96 $");
 
-	sprintf(TextWrite, "*******************************************************************************\r\n");
-	WriteTextToLog(TextWrite);
-	sprintf(TextWrite, "Test Engine Version: $Rev: 96 $\r\n");
-	WriteTextToLog(TextWrite);
-
-
-	if (ExecutionMode == GEN_INTERFACE_LISTINGS)
+	LogInfo("*******************************************************************************");
+	if (g_ExecutionMode == GEN_INTERFACE_LISTINGS)
 	{
-		sprintf(TextWrite, "*******************************************************************************\r\n");
-		WriteTextToLog(TextWrite);
-
-		sprintf(TextWrite, "Number of COM Objects                       %d\r\n", NumberOfComObjects);
-		WriteTextToLog(TextWrite);
-		sprintf(TextWrite, "Number of COM Objects With Kill Bit         %d\r\n", NumberOfComObjectsWithKillBit);
-		WriteTextToLog(TextWrite);
-		sprintf(TextWrite, "Number of COM Objects Without Kill Bit      %d\r\n", NumberOfComObjectsWithoutKillBit);
-		WriteTextToLog(TextWrite);
-		sprintf(TextWrite, "Number of COM Objects Not Script Safe       %d\r\n", NumberOfComObjectsNotScriptSafe);
-		WriteTextToLog(TextWrite);
-		sprintf(TextWrite, "Number of COM Objects Listings Generated    %d\r\n", NumberOfComPassTest);
-		WriteTextToLog(TextWrite);
-		sprintf(TextWrite, "Number of COM Objects Listing Failed        %d\r\n", NumberOfFailedComTests);
-		WriteTextToLog(TextWrite);
-		sprintf(TextWrite, "Number of COM Objects Hung During Operation %d\r\n", NumberOfHungComObjects);
-		WriteTextToLog(TextWrite);
-		sprintf(TextWrite, "Number of COM Objects with No Type Info     %d\r\n", NumberOfComObjectsWithOutTypeInfo);
-		WriteTextToLog(TextWrite);
-		sprintf(TextWrite, "Number of COM Objects Misc Errors           %d\r\n", OtherCOM_Errors);
-		WriteTextToLog(TextWrite);
-		sprintf(TextWrite, "*******************************************************************************\r\n");
-		WriteTextToLog(TextWrite);
-
-	}
-	else if (ExecutionMode == PRINT_COM_OBJECT_INFO)
-	{
-		sprintf(TextWrite, "*******************************************************************************\r\n");
-		WriteTextToLog(TextWrite);
-
-		sprintf(TextWrite, "Number of COM Objects                       %d\r\n", NumberOfComObjects);
-		WriteTextToLog(TextWrite);
-		sprintf(TextWrite, "Number of COM Objects With Kill Bit         %d\r\n", NumberOfComObjectsWithKillBit);
-		WriteTextToLog(TextWrite);
-		sprintf(TextWrite, "Number of COM Objects Without Kill Bit      %d\r\n", NumberOfComObjectsWithoutKillBit);
-		WriteTextToLog(TextWrite);
-		sprintf(TextWrite, "Number of COM Objects Hung During Operation %d\r\n", NumberOfHungComObjects);
-		WriteTextToLog(TextWrite);
-		sprintf(TextWrite, "Number of COM Objects Misc Errors           %d\r\n", OtherCOM_Errors);
-		WriteTextToLog(TextWrite);
-		sprintf(TextWrite, "*******************************************************************************\r\n");
-		WriteTextToLog(TextWrite);
-
+		LogInfo("Number of COM Objects                       %d", g_NumberOfComObjects);
+		LogInfo("Number of COM Objects Listings Generated    %d", g_NumberOfComPassTest);
+		LogInfo("Number of COM Objects Listing Failed        %d", g_NumberOfFailedComTests);
+		LogInfo("Number of COM Objects Hung During Operation %d", g_NumberOfHungComObjects);
+		LogInfo("Number of COM Objects with No Type Info     %d", g_NumberOfComObjectsWithOutTypeInfo);
+		LogInfo("Number of COM Objects Misc Errors           %d", g_NumberOfOtherCOM_Errors);
 	}
 	else
 	{
-		sprintf(TextWrite, "*******************************************************************************\r\n");
-		WriteTextToLog(TextWrite);
-
-		sprintf(TextWrite, "Number of COM Objects                   %d\r\n", NumberOfComObjects);
-		WriteTextToLog(TextWrite);
-		sprintf(TextWrite, "Number of COM Objects With Kill Bit     %d\r\n", NumberOfComObjectsWithKillBit);
-		WriteTextToLog(TextWrite);
-		sprintf(TextWrite, "Number of COM Objects Without Kill Bit  %d\r\n", NumberOfComObjectsWithoutKillBit);
-		WriteTextToLog(TextWrite);
-		if ((ExecutionMode != LOAD_IN_IE) &&
-			(ExecutionMode != PARAMS_IN_IE_PROPBAG) &&
-			(ExecutionMode != PARAMS_IN_IE_BINARY_SCAN))
-		{
-			sprintf(TextWrite, "Number of COM Objects Not Script Safe   %d\r\n", NumberOfComObjectsNotScriptSafe);
-			WriteTextToLog(TextWrite);
-		}
-		if ((ExecutionMode == PARAMS_IN_IE_PROPBAG) ||
-			(ExecutionMode == PARAMS_IN_IE_BINARY_SCAN))
-		{
-			sprintf(TextWrite, "Number of COM Objects Not Safe for Init %d\r\n", NumberOfComObjectsNotSafeForInitialization);
-			WriteTextToLog(TextWrite);
-		}
-		sprintf(TextWrite, "Number of COM Objects Passed Test       %d\r\n", NumberOfComPassTest);
-		WriteTextToLog(TextWrite);
-		sprintf(TextWrite, "Number of COM Objects Failed Test       %d\r\n", NumberOfFailedComTests);
-		WriteTextToLog(TextWrite);
-		sprintf(TextWrite, "Number of COM Objects Hung During Test  %d\r\n", NumberOfHungComObjects);
-		WriteTextToLog(TextWrite);
-		if ((ExecutionMode != LOAD_IN_IE) &&
-			(ExecutionMode != PARAMS_IN_IE_PROPBAG) &&
-			(ExecutionMode != PARAMS_IN_IE_BINARY_SCAN))
-		{
-			sprintf(TextWrite, "Number of COM Objects with No Type Info %d\r\n", NumberOfComObjectsWithOutTypeInfo);
-			WriteTextToLog(TextWrite);
-		}
-		sprintf(TextWrite, "Number of COM Objects Misc Errors       %d\r\n", OtherCOM_Errors);
-		WriteTextToLog(TextWrite);
-		sprintf(TextWrite, "*******************************************************************************\r\n");
-		WriteTextToLog(TextWrite);
+		LogInfo("Number of COM Objects                   %d", g_NumberOfComObjects);
+		LogInfo("Number of COM Objects Passed Test       %d", g_NumberOfComPassTest);
+		LogInfo("Number of COM Objects Failed Test       %d", g_NumberOfFailedComTests);
+		LogInfo("Number of COM Objects Hung During Test  %d", g_NumberOfHungComObjects);
+		LogInfo("Number of COM Objects with No Type Info %d", g_NumberOfComObjectsWithOutTypeInfo);
+		LogInfo("Number of COM Objects Misc Errors       %d", g_NumberOfOtherCOM_Errors);
 	}
-	CloseHandle(hFile);
-	if ((UseNoTestList) && (CLSID_Hash_Table)) Free_Hash_Table(CLSID_Hash_Table);
+	LogInfo("*******************************************************************************");
 	return 0;
 }
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static void PrintUsage(_TCHAR* argv[])                                            //            
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static void PrintUsage(_TCHAR* argv[])
-{
-	fprintf(stderr, "Usage: %s <options> \n", argv[0]);
-	fprintf(stderr, "Options:\n");
-	fprintf(stderr, "        -o <outputfile>   - Output Filename\n");
-	fprintf(stderr, "        -i <inputfile>    - Use input file CLSID list\n");
-	fprintf(stderr, "        -d <notestfile>   - Use don't test CLSID List\n");
-	fprintf(stderr, "        -g                - Generate base COM list\n");
-	fprintf(stderr, "        -k                - Generate Kill Bit COM list\n");
-	fprintf(stderr, "        -l                - Generate Interface Listings\n");
-	fprintf(stderr, "        -b                - Load In Browser (IE)\n");
-	fprintf(stderr, "        -t                - Test Interfaces Properties and Methods\n");
-	fprintf(stderr, "        -p                - Test PARAMS (PropertyBag) in Internet Explorer\n");
-	fprintf(stderr, "        -s                - Test PARAMS (Binary Scan) in Internet Explorer\n");
-	fprintf(stderr, "        -n                - Print COM object information\n");
-	fprintf(stderr, "        -v                - Print out version information\n");
 
-}
-
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static void ParseArguments(int argc, _TCHAR* argv[])                              //            
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static void ParseArguments(int argc, _TCHAR* argv[])
+static void ParseArguments(int argc, PSTR argv[])
 {
-	int i;
-	char *c;
-	char *InputFileName = NULL;
-	char *OutputFileName = NULL;
-	char *NoTestFileName = NULL;
+	g_ExecutionMode = NONE;
+	g_InputFileName.empty();
+	g_OutputFileName.empty();
+	g_ExcludeFileName.empty();
+
 	if (argc < 1)
 	{
 		PrintUsage(argv);
 		exit(2);
 	}
 
-	//get arguments
-	for (i = 1; i < argc; i++)
+	// get arguments
+	for (int i = 1; i < argc; i++)
 	{
-		if (argv[i][0] != '-')
+		const auto arg = argv[i];
+
+		if (strlen(arg) != 2 || !(arg[0] == '-' || arg[0] == '/'))
 		{
-			fprintf(stderr, "Error in command line\n");
+			LogError("Error in command line: Unexpected value: %s", arg);
 			PrintUsage(argv);
-			if (OutputFileName) free(OutputFileName);
-			if (InputFileName) free(InputFileName);
-			if (NoTestFileName) free(NoTestFileName);
 			exit(2);
 		}
-		c = strchr((char *)"io", argv[i][1]);
-		if (c != NULL)
-			if ((i == (argc - 1)) || (argv[i + 1][0] == '-'))
-			{
-				fprintf(stderr, "option %s requires an argument\n", argv[i]);
-				PrintUsage(argv);
-				if (OutputFileName) free(OutputFileName);
-				if (InputFileName) free(InputFileName);
-				if (NoTestFileName) free(NoTestFileName);
-				exit(1);
-			}
-		switch (argv[i][1])
+
+		switch (arg[1])
 		{
 		case 'i':
-			if (!UseInputFile)
+			if (i + 1 >= argc)
 			{
-				i++;
-				UseInputFile = true;
-				InputFileName = _strdup(argv[i]);
-			}
-			else
-			{
-				fprintf(stderr, "Error in command line\n");
+				LogError(
+					"Invalid command line: -i option must be followed by file path.");
 				PrintUsage(argv);
-				if (OutputFileName) free(OutputFileName);
-				if (InputFileName) free(InputFileName);
-				if (NoTestFileName) free(NoTestFileName);
 				exit(2);
 			}
+			g_InputFileName = argv[i + 1];
+			++i;
 			break;
+
 		case 'o':
-			if (OutputFileName == NULL)
+			if (i + 1 >= argc)
 			{
-				i++;
-				OutputFileName = _strdup(argv[i]);
-			}
-			else
-			{
-				fprintf(stderr, "Error in command line\n");
+				LogError(
+					"Invalid command line: -o option must be followed by file path.");
 				PrintUsage(argv);
-				if (OutputFileName) free(OutputFileName);
-				if (InputFileName) free(InputFileName);
-				if (NoTestFileName) free(NoTestFileName);
 				exit(2);
 			}
+			g_OutputFileName = argv[i + 1];
+			++i;
 			break;
 
 		case 'd':
-			if (!UseNoTestList)
+			if (i + 1 >= argc)
 			{
-				i++;
-				UseNoTestList = true;
-				NoTestFileName = _strdup(argv[i]);
-			}
-			else
-			{
-				fprintf(stderr, "Error in command line\n");
+				LogError(
+					"Invalid command line: -d option must be followed by file path.");
 				PrintUsage(argv);
-				if (OutputFileName) free(OutputFileName);
-				if (InputFileName) free(InputFileName);
-				if (NoTestFileName) free(NoTestFileName);
 				exit(2);
 			}
+			g_ExcludeFileName = argv[i + 1];
+			++i;
 			break;
 
 		case 'l':
-			if (ExecutionMode == NONE)
+			if (g_ExecutionMode != NONE)
 			{
-				ExecutionMode = GEN_INTERFACE_LISTINGS;
-			}
-			else
-			{
-				fprintf(stderr, "Error in command line\n");
+				LogError("Error in command line: -l cannot be used with other execution modes.");
 				PrintUsage(argv);
-				if (OutputFileName) free(OutputFileName);
-				if (InputFileName) free(InputFileName);
-				if (NoTestFileName) free(NoTestFileName);
 				exit(2);
 			}
-			break;
-		case 'b':
-			if (ExecutionMode == NONE)
-			{
-				ExecutionMode = LOAD_IN_IE;
-			}
-			else
-			{
-				fprintf(stderr, "Error in command line\n");
-				PrintUsage(argv);
-				if (OutputFileName) free(OutputFileName);
-				if (InputFileName) free(InputFileName);
-				if (NoTestFileName) free(NoTestFileName);
-				exit(2);
-			}
-			break;
-		case 'p':
-			if (ExecutionMode == NONE)
-			{
-				ExecutionMode = PARAMS_IN_IE_PROPBAG;
-			}
-			else
-			{
-				fprintf(stderr, "Error in command line\n");
-				PrintUsage(argv);
-				if (OutputFileName) free(OutputFileName);
-				if (InputFileName) free(InputFileName);
-				if (NoTestFileName) free(NoTestFileName);
-				exit(2);
-			}
-			break;
-		case 's':
-			if (ExecutionMode == NONE)
-			{
-				ExecutionMode = PARAMS_IN_IE_BINARY_SCAN;
-			}
-			else
-			{
-				fprintf(stderr, "Error in command line\n");
-				PrintUsage(argv);
-				if (OutputFileName) free(OutputFileName);
-				if (InputFileName) free(InputFileName);
-				if (NoTestFileName) free(NoTestFileName);
-				exit(2);
-			}
+			g_ExecutionMode = GEN_INTERFACE_LISTINGS;
 			break;
 
 		case 'g':
-			if (ExecutionMode == NONE)
+			if (g_ExecutionMode != NONE)
 			{
-				ExecutionMode = GEN_BASE_COM_LIST;
-			}
-			else
-			{
-				fprintf(stderr, "Error in command line\n");
+				LogError("Error in command line: -g cannot be used with other execution modes.");
 				PrintUsage(argv);
-				if (OutputFileName) free(OutputFileName);
-				if (InputFileName) free(InputFileName);
-				if (NoTestFileName) free(NoTestFileName);
 				exit(2);
 			}
+			g_ExecutionMode = GEN_BASE_COM_LIST;
 			break;
-		case 'k':
-			if (ExecutionMode == NONE)
-			{
-				ExecutionMode = GEN_KILL_BIT_LIST;
-			}
-			else
-			{
-				fprintf(stderr, "Error in command line\n");
-				PrintUsage(argv);
-				if (OutputFileName) free(OutputFileName);
-				if (InputFileName) free(InputFileName);
-				if (NoTestFileName) free(NoTestFileName);
-				exit(2);
-			}
-			break;
+
 		case 't':
-			if (ExecutionMode == NONE)
+			if (g_ExecutionMode != NONE)
 			{
-				ExecutionMode = TEST_INTERFACES;
-			}
-			else
-			{
-				fprintf(stderr, "Error in command line\n");
+				LogError("Error in command line: -t cannot be used with other execution modes.");
 				PrintUsage(argv);
-				if (OutputFileName) free(OutputFileName);
-				if (InputFileName) free(InputFileName);
-				if (NoTestFileName) free(NoTestFileName);
 				exit(2);
 			}
-			break;
-		case 'n':
-			if (ExecutionMode == NONE)
-			{
-				ExecutionMode = PRINT_COM_OBJECT_INFO;
-			}
-			else
-			{
-				fprintf(stderr, "Error in command line\n");
-				PrintUsage(argv);
-				if (OutputFileName) free(OutputFileName);
-				if (InputFileName) free(InputFileName);
-				if (NoTestFileName) free(NoTestFileName);
-				exit(2);
-			}
+			g_ExecutionMode = TEST_INTERFACES;
 			break;
 
 		case 'v':
-			if (ExecutionMode == NONE)
+			if (g_ExecutionMode != NONE)
 			{
-				ExecutionMode = EMIT_VERSION_INFO;
-			}
-			else
-			{
-				fprintf(stderr, "Error in command line\n");
+				LogError("Error in command line: -v cannot be used with other execution modes.");
 				PrintUsage(argv);
-				if (OutputFileName) free(OutputFileName);
-				if (InputFileName) free(InputFileName);
-				if (NoTestFileName) free(NoTestFileName);
 				exit(2);
 			}
+			g_ExecutionMode = EMIT_VERSION_INFO;
 			break;
 
 		case '?':
@@ -515,960 +338,510 @@ static void ParseArguments(int argc, _TCHAR* argv[])
 			break;
 
 		default:
-			fprintf(stderr, "Error in command line\n");
+			LogError("Error in command line: Unknown option: %s", arg);
 			PrintUsage(argv);
-			if (OutputFileName) free(OutputFileName);
-			if (InputFileName) free(InputFileName);
-			if (NoTestFileName) free(NoTestFileName);
 			exit(2);
 			break;
-
 		}
 	}
-	if (ExecutionMode == NONE)
-	{
-		printf("Execution mode not specified use -g,-k,-l,-b, or -p \n");
-		PrintUsage(argv);
-		if (OutputFileName) free(OutputFileName);
-		if (InputFileName) free(InputFileName);
-		if (NoTestFileName) free(NoTestFileName);
-		exit(2);
 
-	}
-	if ((UseNoTestList ||
-		UseInputFile) &&
-		((ExecutionMode == GEN_BASE_COM_LIST) ||
-		(ExecutionMode == GEN_KILL_BIT_LIST) ||
-			(ExecutionMode == EMIT_VERSION_INFO)))
+	if (g_ExecutionMode == NONE)
 	{
-		printf("-i,-d options not vaild with -g, -k or -v options\n");
-		if (OutputFileName) free(OutputFileName);
-		if (InputFileName) free(InputFileName);
-		if (NoTestFileName) free(NoTestFileName);
+		LogError("Execution mode not specified use -g,-l,-t, or -v.");
+		PrintUsage(argv);
+		exit(2);
+	}
+	if ((!g_ExcludeFileName.empty() || !g_InputFileName.empty()) &&
+		(g_ExecutionMode == GEN_BASE_COM_LIST ||
+			g_ExecutionMode == EMIT_VERSION_INFO))
+	{
+		LogError("-i,-d options not vaild with -t or -v options.");
 		exit(1);
 	}
-
-	if (UseNoTestList)
-	{
-		wchar_t            InputLine[512];
-		size_t             InputLineLen;
-		FILE *             NoTestInputFile;
-		CLSID              clsid;
-
-		NoTestInputFile = fopen(NoTestFileName, "rt");
-
-		if (NoTestInputFile == NULL)
-		{
-			fprintf(stderr, "Can't open no test input file %s\n", NoTestFileName);
-			if (NoTestFileName) free(NoTestFileName);
-			exit(1);
-		}
-
-		if ((CLSID_Hash_Table = Create_Hash_Table(HASH_TABLE_SIZE)) == NULL)
-		{
-			printf("Failed to Create Hash Table\n");
-			exit(0);
-		}
-		while (fgetws(InputLine, sizeof(InputLine), NoTestInputFile))
-		{
-			InputLineLen = wcslen(InputLine);
-			if (InputLineLen > 0)
-			{
-				if (InputLine[InputLineLen - 1] == 0x0A) InputLine[InputLineLen - 1] = NULL;
-				if (wcslen(InputLine) == 0) continue;
-				if (CLSIDFromString(InputLine, &clsid) != NOERROR)
-				{
-					fprintf(stderr, "Error in no test input file\n");
-					fclose(NoTestInputFile);
-					if (OutputFileName) free(OutputFileName);
-					if (InputFileName) free(InputFileName);
-					exit(1);
-				}
-				if (Insert_Hash_Table(CLSID_Hash_Table, clsid) != 0)
-				{
-					fprintf(stderr, "Error build No Test CLSID Hash Table\n");
-					fclose(NoTestInputFile);
-					if (OutputFileName) free(OutputFileName);
-					if (InputFileName) free(InputFileName);
-					exit(1);
-				}
-			}
-		}
-		fclose(NoTestInputFile);
-	}
-
-	if (UseInputFile)
-	{
-		InputFile = fopen(InputFileName, "rt");
-
-		if (InputFile == NULL)
-		{
-			fprintf(stderr, "Can't open input file %s\n", InputFileName);
-			if (OutputFileName) free(OutputFileName);
-			if (InputFileName) free(InputFileName);
-			exit(1);
-		}
-		if (InputFileName) free(InputFileName);
-	}
-	if ((ExecutionMode == GEN_BASE_COM_LIST) ||
-		(ExecutionMode == GEN_KILL_BIT_LIST))
-	{
-		GenerateComBaseline(OutputFileName, ExecutionMode == GEN_KILL_BIT_LIST);
-		if (OutputFileName) free(OutputFileName);
-		exit(0);
-	}
-	if ((ExecutionMode == EMIT_VERSION_INFO))
-	{
-		EmitVersionInfo(OutputFileName);
-		if (OutputFileName) free(OutputFileName);
-		exit(0);
-	}
-	else
-	{
-		if (OutputFileName)
-		{
-			hFile = CreateFile(OutputFileName,     // file to create
-				GENERIC_WRITE,          // open for writing
-				0,                      // do not share
-				NULL,                   // default security
-				CREATE_ALWAYS,          // 
-				FILE_ATTRIBUTE_NORMAL,  // normal file
-				NULL);                  // no attr. template
-			free(OutputFileName);
-			if (hFile == INVALID_HANDLE_VALUE)
-			{
-				if (InputFile) fclose(InputFile);
-				printf("Could not open output file ");
-				PrintError(GetLastError());
-				printf("\n");
-				exit(2);
-			}
-		}
-		else
-		{
-			hFile = GetStdHandle(STD_OUTPUT_HANDLE);
-		}
-	}
-
-	// end of ParseArguments()
 }
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static void GenerateComBaseline(char *FileName,bool List_Objects_Killbit)         //            
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static void GenerateComBaseline(char *FileName, bool List_Objects_Killbit)
+
+std::wstring Widen(PCSTR pStr, int cbStr /*= -1*/)
 {
-	FILE              *OutputFile;
-	HKEY               hKey;
-	DWORD              NumObjects;
-	COM_ObjectInfoType COM_ObjectInfo;
-	DWORD              NumFound = 0;
-	DWORD              NumKillBit = 0;
-	int                kbval;
-
-	if (FileName == NULL) OutputFile = stdout;
-	else if ((OutputFile = fopen(FileName, "w+")) == NULL)
+	assert(pStr);
+	assert(cbStr >= -1);
+	if (cbStr == -1)
+		cbStr = strlen(pStr);
+	if (cbStr == 0)
+		return {};
+	const auto cch = ::MultiByteToWideChar(CP_UTF8, 0, pStr, cbStr, nullptr, 0);
+	std::wstring str(cch, L'\0');
+	if (cch == 0)
 	{
-		printf("Cannot open output file :%s\n", FileName);
+		LogError("Error widening string (%u).", ::GetLastError());
+		return {};
+	}
+	::MultiByteToWideChar(CP_UTF8, 0, pStr, cbStr, &str[0], cch);
+	assert(::GetLastError() == 0);
+	return str;
+}
+std::wstring Widen(const std::string &str)
+{
+	return Widen(str.c_str(), static_cast<int>(str.size()));
+}
+
+std::string Narrow(PCWSTR pStr, int cchStr /*= -1*/)
+{
+	assert(pStr);
+	assert(cchStr >= -1);
+	if (cchStr == -1)
+		cchStr = wcslen(pStr);
+	if (cchStr == 0)
+		return {};
+	const auto cb = ::WideCharToMultiByte(CP_UTF8, 0, pStr, cchStr, nullptr, 0,
+		nullptr, nullptr);
+	if (cb == 0)
+	{
+		LogError("Error narrowing string (%u).", ::GetLastError());
+		return {};
+	}
+	std::string str(cb, L'\0');
+	::WideCharToMultiByte(CP_UTF8, 0, pStr, cchStr, &str[0], cb, nullptr,
+		nullptr);
+	assert(::GetLastError() == 0);
+	return str;
+}
+std::string Narrow(const std::wstring &str)
+{
+	return Narrow(str.c_str(), static_cast<int>(str.size()));
+}
+
+std::string FormatV(_Printf_format_string_ PCSTR Format, va_list va)
+{
+	// The following code optimistically assumes most values will fit in the fixed
+	// buffer.
+	char fixed[1024];
+	auto len = _vsnprintf_s(fixed, _TRUNCATE, Format, va);
+	if (len >= 0)
+		return std::string(fixed, len);
+
+	// Truncated. Calculate the required size....
+	len = vsnprintf(nullptr, 0, Format, va);
+	if (len < 0)
+		return "<format error>";
+	std::string str(len, '\0');
+	vsprintf_s(&str[0], str.size() + 1, Format, va);
+	return str;
+}
+
+std::string Format(_Printf_format_string_ PCSTR Format, ...)
+{
+	va_list va;
+	va_start(va, Format);
+	auto str = FormatV(Format, va);
+	va_end(va);
+	return str;
+}
+
+void Log(PCSTR text, size_t length = -1)
+{
+	if (text && length == -1)
+		length = strlen(text);
+	if (!text || length == 0)
+		return;
+
+	// Always write to stdout
+	std::cout.write(text, length);
+
+	// Write to log file
+	if (g_LogFileHandle)
+	{
+		do
+		{
+			DWORD BytesWritten;
+			if (!::WriteFile(g_LogFileHandle, text, length, &BytesWritten, 0))
+				break;
+			text += BytesWritten;
+			length -= BytesWritten;
+		} while (length > 0);
+	}
+}
+void Log(const std::string &text) { Log(text.c_str(), text.size()); }
+
+void LogInfo(_Printf_format_string_ PCSTR Format, ...)
+{
+	va_list va;
+	va_start(va, Format);
+	const auto str = FormatV(Format, va);
+	va_end(va);
+	Log(str);
+	Log("\n");
+}
+
+void LogError(_Printf_format_string_ PCSTR Format, ...)
+{
+	va_list va;
+	va_start(va, Format);
+	const auto str = FormatV(Format, va);
+	va_end(va);
+	Log("ERROR: ");
+	Log(str);
+	Log("\n");
+}
+
+
+static void GenerateComBaseline()
+{
+	DWORD NumObjects;
+	const auto hKey = OpenCOM_ObjectList(&NumObjects);
+	if (hKey == nullptr)
+	{
+		std::cout << "ERROR: Can't open COM object database\n";
 		return;
 	}
+	ON_EXIT_SCOPE(CloseCOM_ObjectList(hKey));
 
-	hKey = OpenCOM_ObjectList(&NumObjects);
-	if (hKey == NULL)
+	DWORD NumFound = 0;
+	for (auto index = 0u; index < NumObjects; index++)
 	{
-		printf("Can't open COM object database\n");
-		if (FileName != NULL) fclose(OutputFile);
-		return;
-	}
-	if (NumObjects == 0)
-
-	{
-		printf("Can't find any COM objects\n");
-		CloseCOM_ObjectList(hKey);
-		if (FileName != NULL) fclose(OutputFile);
-		return;
-	}
-
-	for (DWORD index = 0; index < NumObjects; index++)
-	{
+		COM_ObjectInfoType COM_ObjectInfo;
 		if (!GetCOM_ObjectInfo(hKey, index, &COM_ObjectInfo))
-		{
 			continue;
-		}
-		else
-		{
-			if ((kbval = GetKillBit(COM_ObjectInfo.CLSID_Str_Wide)) == 1) NumKillBit++;
-			if (!List_Objects_Killbit)
-				fprintf(OutputFile, "%ws\n", COM_ObjectInfo.CLSID_Str_Wide);
-			else
-			{
-				if (kbval == 1)
-					fprintf(OutputFile, "%ws %s\n", COM_ObjectInfo.CLSID_Str_Wide, COM_ObjectInfo.CLSID_Description);
-			}
-			NumFound++;
-		}
-	}
-	CloseCOM_ObjectList(hKey);
-	if (FileName != NULL) fclose(OutputFile);
-	printf("%d COM Objects Found\n", NumFound);
-	printf("%d Objects with kill bit set\n", NumKillBit);
-	return;
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static void EmitVersionInfo(char *FileName)                                       //            
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static void EmitVersionInfo(char *FileName)
-{
-	FILE              *OutputFile;
 
-	if (FileName == NULL) OutputFile = stdout;
-	else if ((OutputFile = fopen(FileName, "w+")) == NULL)
-	{
-		fprintf(stderr, "Cannot open output file :%s\n", FileName);
-		return;
+		LogInfo("%ls", COM_ObjectInfo.CLSID_Str_Wide);
+		++NumFound;
 	}
+	std::cout << NumFound << " COM Objects Found\n";
+}
+
+static void EmitVersionInfo()
+{
 	if (RELEASE_VERSION && "$Rev: 96 $")
-		fprintf(OutputFile, "Dranzer Release Version: %s; Test Engine Revision: $Rev: 96 $", RELEASE_VERSION);
-	else fprintf(stderr, "Cannot determine version info");
-
-	if (FileName != NULL) fclose(OutputFile);
-	return;
+		LogInfo("Dranzer Release Version: %s; Test Engine Revision: $Rev: 96 $",
+			RELEASE_VERSION);
+	else
+		LogError("Cannot determine version info");
 }
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static int HashCLSID(CLSID clsid)                                                 //            
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static unsigned int HashCLSID(CLSID clsid)
-{
-	unsigned int hash = 0, i;
-	for (i = 0; i < 8; i++) hash ^= ((const short *)&clsid)[i];
-	return hash & (HASH_TABLE_SIZE - 1);
-}
-////////////////////////////////////////////////////////////////////////////////////////
-//                                                                                   //
-// static Hash_Table * Create_Hash_Table(unsigned int Size)                          //            
-//                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static Hash_Table * Create_Hash_Table(unsigned int Size)
-{
-	unsigned int         i;
-	Hash_Table *New = (Hash_Table *)malloc(sizeof(Hash_Table));
-	if (New)
-	{
-		New->Hash_Tables = (Hash_Entry **)malloc(Size * sizeof(Hash_Entry *));
-		if (New->Hash_Tables)
-		{
-			New->Table_Size = Size;
-			for (i = 0; i < Size; i++) New->Hash_Tables[i] = NULL;
-		}
-		else
-		{
-			free(New);
-			New = NULL;
-		}
-	}
-	return(New);
-}
-////////////////////////////////////////////////////////////////////////////////////////
-//                                                                                   //
-// static void Free_Hash_Table(Hash_Table * Table)                                   //            
-//                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static void Free_Hash_Table(Hash_Table * Table)
-{
-	unsigned int  i;
-	Hash_Entry * Entry;
-
-	for (i = 0; i < Table->Table_Size; i++)
-	{
-		while (Table->Hash_Tables[i])
-		{
-			Entry = Table->Hash_Tables[i];
-			Table->Hash_Tables[i] = Entry->Next;
-			free(Entry);
-		}
-	}
-	free(Table->Hash_Tables);
-	free(Table);
-	return;
-}
-////////////////////////////////////////////////////////////////////////////////////////
-//                                                                                    //
-// static int Insert_Hash_Table(Hash_Table * Table,CLSID clsid )                       //            
-//                                                                                    //
-////////////////////////////////////////////////////////////////////////////////////////
-static int Insert_Hash_Table(Hash_Table * Table, CLSID clsid)
-{
-	unsigned int Table_Index;
-	Hash_Entry *New_Entry = (Hash_Entry *)malloc(sizeof(Hash_Entry));
-	if (New_Entry)
-	{
-		New_Entry->clsid = clsid;
-		Table_Index = HashCLSID(clsid);
-		New_Entry->Next = Table->Hash_Tables[Table_Index];
-		Table->Hash_Tables[Table_Index] = New_Entry;
-		return(0);
-	}
-	return(-1);
-}
-////////////////////////////////////////////////////////////////////////////////////////
-//                                                                                    //
-// static int Remove_Hash_Table(Hash_Table * Table,CLSID clsid)                       //            
-//                                                                                    //
-////////////////////////////////////////////////////////////////////////////////////////
-//static int Remove_Hash_Table(Hash_Table * Table, CLSID clsid)
-//{
-//
-//	Hash_Entry * Entry, **Start;
-//	unsigned int          Table_Index = HashCLSID(clsid);
-//
-//	Start = &Table->Hash_Tables[Table_Index];
-//	while (Entry = *Start)
-//	{
-//		if (Entry->clsid == clsid)
-//		{
-//			*Start = Entry->Next;
-//			free(Entry);
-//			return(0);
-//		}
-//		else Start = &Entry->Next;
-//	}
-//	return(-1);
-//}
-////////////////////////////////////////////////////////////////////////////////////////
-//                                                                                    //
-//static CLSID* Lookup_Hash(Hash_Table * Table,CLSID clsid)                          //                                   //            
-//                                                                                    //
-////////////////////////////////////////////////////////////////////////////////////////
-static CLSID* Lookup_Hash(Hash_Table * Table, CLSID clsid)
-{
-	Hash_Entry * Entry;
-
-	unsigned int Table_Index = HashCLSID(clsid);
-	Entry = Table->Hash_Tables[Table_Index];
-
-	while (Entry)
-	{
-		if (Entry->clsid == clsid) return(&Entry->clsid);
-		Entry = Entry->Next;
-
-	}
-	return(NULL);
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static BOOL CtrlHandler(DWORD fdwCtrlType)                                        //            
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static BOOL CtrlHandler(DWORD /*fdwCtrlType*/)
-{
-	SetEvent(TestHarnessKillEvent);
-	return(TRUE);
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static void PrintError(DWORD dw)                                                  //            
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static void PrintError(DWORD dw)
-{
-	char* lpMsgBuf = nullptr;
-
-	FormatMessageA(
-		FORMAT_MESSAGE_ALLOCATE_BUFFER |
-		FORMAT_MESSAGE_FROM_SYSTEM,
-		NULL,
-		dw,
-		MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-		(LPTSTR)&lpMsgBuf,
-		0, NULL);
-
-	printf("%s", lpMsgBuf);
-
-	LocalFree(lpMsgBuf);
-	return;
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static DWORD WINAPI COM_TestThreadProcRegistry(LPVOID arg)                                //            
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
 
 static DWORD WINAPI COM_TestThreadProcRegistry(LPVOID /*arg*/)
 {
-	HKEY               hKey;
-	DWORD              NumObjects;
-	int                KillBit;
-	int                ExitCode;
-	COM_ObjectInfoType COM_ObjectInfo;
-	DWORD              WaitResult;
-
-	szTempName[0] = NULL;
-
-	hKey = OpenCOM_ObjectList(&NumObjects);
-	if (hKey == NULL)
+	DWORD NumObjects;
+	const auto hKey = OpenCOM_ObjectList(&NumObjects);
+	if (hKey == nullptr)
 	{
-		printf("Can't open COM object database\n");
-		return(0);
+		LogError("Can't open COM object database.");
+		return (0);
 	}
-	if (NumObjects == 0)
-
-	{
-		printf("Can't find any COM objects\n");
-		CloseCOM_ObjectList(hKey);
-		return(0);
-	}
+	ON_EXIT_SCOPE(CloseCOM_ObjectList(hKey));
 
 	for (DWORD index = 0; index < NumObjects; index++)
 	{
-		WaitResult = WaitForSingleObject(TestHarnessKillEvent, 0);
+		const auto WaitResult = ::WaitForSingleObject(g_TestHarnessKillEvent, 0);
 		if (WaitResult == WAIT_OBJECT_0)
 		{
-			char TextWrite[1024];
-			sprintf(TextWrite, "*******************************************************************************\r\n");
-			WriteTextToLog(TextWrite);
-			sprintf(TextWrite, "%s\r\n", ErrorString(USER_ABORT));
-			WriteTextToLog(TextWrite);
-			sprintf(TextWrite, "*******************************************************************************\r\n");
-			WriteTextToLog(TextWrite);
-
-			printf("User Abort 1\n");
-			CloseCOM_ObjectList(hKey);
-			DeleteTempResultsFile(szTempName);
-			DeleteHTMLResults();
-			return(0);
+			LogInfo("*******************************************************************************");
+			LogInfo("%s", ErrorString(USER_ABORT));
+			LogInfo("*******************************************************************************");
+			return (0);
 		}
+
+		COM_ObjectInfoType COM_ObjectInfo;
 		if (!GetCOM_ObjectInfo(hKey, index, &COM_ObjectInfo))
 		{
-			//printf("GetCOM_ObjectInfo Failed for Index %d\n",index);
+			// LogError("GetCOM_ObjectInfo Failed for Index %d", index);
 			continue;
 		}
-		if (UseNoTestList)
+
+		CLSID clsid;
+		if (::CLSIDFromString(COM_ObjectInfo.CLSID_Str_Wide, &clsid) != NOERROR)
+			continue;
+
+		if (g_ExcludeCLSIDs.find(clsid) != g_ExcludeCLSIDs.end())
+			continue;
+
+		g_NumberOfComObjects++;
+
+		// Create a temporary file.
+		char szTempName[MAX_PATH - 1] = { 0 };
+		if (::GetTempPathA(sizeof(szTempName), szTempName) == 0)
 		{
-			CLSID clsid;
-			if (CLSIDFromString(COM_ObjectInfo.CLSID_Str_Wide, &clsid) == NOERROR)
+			printf("GetTempPath failed with error %d.\n", ::GetLastError());
+			return 0;
+		}
+		strcat_s(szTempName, Narrow(COM_ObjectInfo.CLSID_Str_Wide).c_str());
+		strcat_s(szTempName, ".log");
+		ON_EXIT_SCOPE(DeleteTempResultsFile(szTempName));
+
+		const auto ExitCode = TestCOMObject(&COM_ObjectInfo, szTempName);
+		if (ExitCode > 0)
+		{
+			if (ExitCode == GET_TYPE_INFO_FAILED)
+				g_NumberOfComObjectsWithOutTypeInfo++;
+			else
+				g_NumberOfOtherCOM_Errors++;
+		}
+		else if (ExitCode == SUCCESS)
+		{
+			if (g_ExecutionMode != GEN_INTERFACE_LISTINGS)
+				g_NumberOfComPassTest++;
+			else
 			{
-				if (Lookup_Hash(CLSID_Hash_Table, clsid))
-				{
-					continue;
-				}
+				if (LogFileContents(szTempName) != SUCCESS)
+					LogError("Failed to append COM Test Log File");
 			}
 		}
-		KillBit = GetKillBit(COM_ObjectInfo.CLSID_Str_Wide);
-		NumberOfComObjects++;
 
-		if ((((KillBit == 0) || (KillBit == -1)) && (ExecutionMode != PRINT_COM_OBJECT_INFO)) || (ExecutionMode == PRINT_COM_OBJECT_INFO))
-
+		if (ExitCode == USER_ABORT)
 		{
-			UINT uRetVal;
-
-			// Create a temporary file. 
-			uRetVal = GetTempFileName(lpPathBuffer, // directory for tmp files
-				"COM",    // temp file name prefix 
-				0,            // create unique name 
-				szTempName);  // buffer for name 
-			if (uRetVal == 0)
-			{
-				printf("GetTempFileName failed with error %d.\n", GetLastError());
-				return (0);
-			}
-
-			if ((KillBit == 0) || (KillBit == -1)) NumberOfComObjectsWithoutKillBit++;
-			else if (ExecutionMode == PRINT_COM_OBJECT_INFO) NumberOfComObjectsWithKillBit++;
-
-			ExitCode = TestCOMObject(&COM_ObjectInfo, szTempName);
-			if (ExitCode == COM_OBJECT_NOT_SCRIPT_SAFE) NumberOfComObjectsNotScriptSafe++;
-			else if (ExitCode == COM_OBJECT_NOT_SAFE_FOR_UNTRUSTED_DATA) NumberOfComObjectsNotSafeForInitialization++;
-			else if (ExitCode > 0)
-			{
-				if (ExitCode == GET_TYPE_INFO_FAILED) NumberOfComObjectsWithOutTypeInfo++;
-				else OtherCOM_Errors++;
-			}
-			else if (ExitCode == SUCCESS)
-			{
-				NumberOfComPassTest++;
-				if ((ExecutionMode == GEN_INTERFACE_LISTINGS) || (ExecutionMode == PRINT_COM_OBJECT_INFO))
-				{
-					if (AppendFile(hFile, szTempName) != SUCCESS)
-					{
-						char TextWrite[1024];
-						sprintf(TextWrite, "*******************************************************************************\r\n");
-						WriteTextToLog(TextWrite);
-						sprintf(TextWrite, "ERROR - Appending COM Test Log File\r\n");
-						WriteTextToLog(TextWrite);
-						sprintf(TextWrite, "*******************************************************************************\r\n");
-						WriteTextToLog(TextWrite);
-					}
-				}
-			}
-
-			if (ExitCode == USER_ABORT)
-			{
-				char TextWrite[1024];
-				sprintf(TextWrite, "*******************************************************************************\r\n");
-				WriteTextToLog(TextWrite);
-				sprintf(TextWrite, "%s\r\n", ErrorString(ExitCode));
-				WriteTextToLog(TextWrite);
-				sprintf(TextWrite, "*******************************************************************************\r\n");
-				WriteTextToLog(TextWrite);
-
-				printf("User Abort 2\n");
-				fflush(stdout);
-				CloseCOM_ObjectList(hKey);
-				DeleteTempResultsFile(szTempName);
-				DeleteHTMLResults();
-				return(0);
-			}
-			if (ExitCode < 0)
-			{
-				char TextWrite[1024];
-
-				MoveResultsFile(COM_ObjectInfo.CLSID_Str_Wide);
-				sprintf(TextWrite, "*******************************************************************************\r\n");
-				WriteTextToLog(TextWrite);
-				sprintf(TextWrite, "%ws-%s\r\n", COM_ObjectInfo.CLSID_Str_Wide, COM_ObjectInfo.CLSID_Description);
-				WriteTextToLog(TextWrite);
-				sprintf(TextWrite, "ERROR - ");
-				WriteTextToLog(TextWrite);
-				sprintf(TextWrite, "%s (0x%x)\r\n", ErrorString(ExitCode), ExitCode);
-				WriteTextToLog(TextWrite);
-				sprintf(TextWrite, "*******************************************************************************\r\n");
-				WriteTextToLog(TextWrite);
-
-				if (ExitCode == COM_OBJECT_OPERATION_HUNG) NumberOfHungComObjects++;
-				else NumberOfFailedComTests++;
-
-				if (AppendFile(hFile, szTempName) != SUCCESS)
-				{
-					sprintf(TextWrite, "*******************************************************************************\r\n");
-					WriteTextToLog(TextWrite);
-					sprintf(TextWrite, "ERROR - Appending COM Test Log File\r\n");
-					WriteTextToLog(TextWrite);
-					sprintf(TextWrite, "*******************************************************************************\r\n");
-					WriteTextToLog(TextWrite);
-				}
-			}
-			else DeleteHTMLResults();
-
-			DeleteTempResultsFile(szTempName);
-
+			LogInfo("*******************************************************************************");
+			LogInfo("%s", ErrorString(ExitCode));
+			LogInfo("*******************************************************************************");
+			return (0);
 		}
-		else NumberOfComObjectsWithKillBit++;
+		if (ExitCode < 0)
+		{
+			if (ExitCode == COM_OBJECT_OPERATION_HUNG)
+				g_NumberOfHungComObjects++;
+			else
+				g_NumberOfFailedComTests++;
+
+			LogInfo("*******************************************************************************");
+			LogInfo("%ls-%s", COM_ObjectInfo.CLSID_Str_Wide, COM_ObjectInfo.CLSID_Description);
+			LogInfo("ERROR - %s (0x%x)", ErrorString(ExitCode), ExitCode);
+			LogInfo("*******************************************************************************");
+
+			if (LogFileContents(szTempName) != SUCCESS)
+				LogError("Failed to append COM Test Log File");
+		}
 	}
-	CloseCOM_ObjectList(hKey);
-	return(0);
+	return (0);
 }
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static DWORD WINAPI COM_TestThreadProcInputFile(LPVOID arg)                                //            
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
 
 static DWORD WINAPI COM_TestThreadProcInputFile(LPVOID /*arg*/)
 {
-	wchar_t            InputLine[512];
-	size_t             InputLineLen;
-	DWORD              LineNumber = 0;
-	int                KillBit;
-	int                ExitCode;
-	COM_ObjectInfoType COM_ObjectInfo;
-	DWORD              WaitResult;
-
-	szTempName[0] = NULL;
-
-	while (fgetws(InputLine, sizeof(InputLine), InputFile))
+	const auto InputFile = fopen(g_InputFileName.c_str(), "rt");
+	if (!InputFile)
 	{
-		LineNumber++;
-		WaitResult = WaitForSingleObject(TestHarnessKillEvent, 0);
+		LogError("Can't open input file '%s'", g_InputFileName.c_str());
+		exit(1);
+	}
+	ON_EXIT_SCOPE(fclose(InputFile));
+
+	DWORD LineNumber = 0;
+	wchar_t InputLine[1024];
+	while (fgetws(InputLine, _countof(InputLine), InputFile))
+	{
+		++LineNumber;
+
+		if (const auto InputLineLen = wcslen(InputLine))
+			if (InputLine[InputLineLen - 1] == '\r')
+				InputLine[InputLineLen - 1] = '\0';
+		if (!InputLine[0])
+			continue;
+
+		const auto WaitResult = ::WaitForSingleObject(g_TestHarnessKillEvent, 0);
 		if (WaitResult == WAIT_OBJECT_0)
 		{
-			char TextWrite[1024];
-			sprintf(TextWrite, "*******************************************************************************\r\n");
-			WriteTextToLog(TextWrite);
-			sprintf(TextWrite, "%s\r\n", ErrorString(USER_ABORT));
-			WriteTextToLog(TextWrite);
-			sprintf(TextWrite, "*******************************************************************************\r\n");
-			WriteTextToLog(TextWrite);
-			printf("User Abort 1\n");
-			DeleteTempResultsFile(szTempName);
-			DeleteHTMLResults();
-			return(0);
-		}
-		InputLineLen = wcslen(InputLine);
-		if (InputLineLen > 0)
-		{
-			if (InputLine[InputLineLen - 1] == 0x0A)
-				InputLine[InputLineLen - 1] = NULL;
-			if (wcslen(InputLine) == 0) continue;
+			LogInfo("*******************************************************************************");
+			LogInfo("%s", ErrorString(USER_ABORT));
+			LogInfo("*******************************************************************************");
+			return (0);
 		}
 
+		COM_ObjectInfoType COM_ObjectInfo;
 		if (!GetCOM_ObjectInfo(InputLine, &COM_ObjectInfo))
 		{
-			printf("Syntax Error in Input Line (%d) - %ws\n", LineNumber, InputLine);
-			DeleteTempResultsFile(szTempName);
-			return(0);
+			LogError("Syntax Error in Input Line (%d) - %ls", LineNumber, InputLine);
+			return (0);
 		}
-		if (UseNoTestList)
+
+		CLSID clsid;
+		if (::CLSIDFromString(COM_ObjectInfo.CLSID_Str_Wide, &clsid) == NOERROR)
+			continue;
+
+		if (g_ExcludeCLSIDs.find(clsid) != g_ExcludeCLSIDs.end())
+			continue;
+
+		g_NumberOfComObjects++;
+
+		// Create a temporary file.
+		char szTempName[MAX_PATH - 1] = { 0 };
+		if (::GetTempPathA(sizeof(szTempName), szTempName) == 0)
 		{
-			CLSID clsid;
-			if (CLSIDFromString(COM_ObjectInfo.CLSID_Str_Wide, &clsid) == NOERROR)
-			{
-				if (Lookup_Hash(CLSID_Hash_Table, clsid))
-				{
-					continue;
-				}
-			}
+			printf("GetTempPath failed with error %d.\n", ::GetLastError());
+			return 0;
 		}
-		KillBit = GetKillBit(COM_ObjectInfo.CLSID_Str_Wide);
-		NumberOfComObjects++;
+		strcat_s(szTempName, Narrow(COM_ObjectInfo.CLSID_Str_Wide).c_str());
+		strcat_s(szTempName, ".log");
+		ON_EXIT_SCOPE(DeleteTempResultsFile(szTempName));
 
-		if ((((KillBit == 0) || (KillBit == -1)) && (ExecutionMode != PRINT_COM_OBJECT_INFO)) || (ExecutionMode == PRINT_COM_OBJECT_INFO))
+		const auto ExitCode = TestCOMObject(&COM_ObjectInfo, szTempName);
+		if (ExitCode > 0)
 		{
-			UINT uRetVal;
-
-			// Create a temporary file. 
-			uRetVal = GetTempFileName(lpPathBuffer, // directory for tmp files
-				"COM",        // temp file name prefix 
-				0,            // create unique name 
-				szTempName);  // buffer for name 
-			if (uRetVal == 0)
-			{
-				printf("GetTempFileName failed with error %d.\n", GetLastError());
-				return (0);
-			}
-
-			if ((KillBit == 0) || (KillBit == -1)) NumberOfComObjectsWithoutKillBit++;
-			else if (ExecutionMode == PRINT_COM_OBJECT_INFO) NumberOfComObjectsWithKillBit++;
-
-			ExitCode = TestCOMObject(&COM_ObjectInfo, szTempName);
-			if (ExitCode == COM_OBJECT_NOT_SCRIPT_SAFE) NumberOfComObjectsNotScriptSafe++;
-			else if (ExitCode == COM_OBJECT_NOT_SAFE_FOR_UNTRUSTED_DATA) NumberOfComObjectsNotSafeForInitialization++;
-			else if (ExitCode > 0)
-			{
-				if (ExitCode == GET_TYPE_INFO_FAILED) NumberOfComObjectsWithOutTypeInfo++;
-				else OtherCOM_Errors++;
-			}
-			else if (ExitCode == SUCCESS)
-			{
-				if ((ExecutionMode != GEN_INTERFACE_LISTINGS) && (ExecutionMode != PRINT_COM_OBJECT_INFO))  NumberOfComPassTest++;
-				else
-				{
-					if (AppendFile(hFile, szTempName) != SUCCESS)
-					{
-						char TextWrite[1024];
-						sprintf(TextWrite, "*******************************************************************************\r\n");
-						WriteTextToLog(TextWrite);
-						sprintf(TextWrite, "ERROR - Appending COM Test Log File\r\n");
-						WriteTextToLog(TextWrite);
-						sprintf(TextWrite, "*******************************************************************************\r\n");
-						WriteTextToLog(TextWrite);
-					}
-				}
-			}
-
-			if (ExitCode == USER_ABORT)
-			{
-				char TextWrite[1024];
-				sprintf(TextWrite, "*******************************************************************************\r\n");
-				WriteTextToLog(TextWrite);
-				sprintf(TextWrite, "%s\r\n", ErrorString(ExitCode));
-				WriteTextToLog(TextWrite);
-				sprintf(TextWrite, "*******************************************************************************\r\n");
-				WriteTextToLog(TextWrite);
-
-				printf("User Abort 2\n");
-				fflush(stdout);
-				DeleteTempResultsFile(szTempName);
-				DeleteHTMLResults();
-				return(0);
-			}
-			if (ExitCode < 0)
-			{
-				char TextWrite[1024];
-				MoveResultsFile(COM_ObjectInfo.CLSID_Str_Wide);
-				sprintf(TextWrite, "*******************************************************************************\r\n");
-				WriteTextToLog(TextWrite);
-				sprintf(TextWrite, "%ws-%s\r\n", COM_ObjectInfo.CLSID_Str_Wide, COM_ObjectInfo.CLSID_Description);
-				WriteTextToLog(TextWrite);
-				sprintf(TextWrite, "ERROR - ");
-				WriteTextToLog(TextWrite);
-				sprintf(TextWrite, "%s (0x%x)\r\n", ErrorString(ExitCode), ExitCode);
-				WriteTextToLog(TextWrite);
-				sprintf(TextWrite, "*******************************************************************************\r\n");
-				WriteTextToLog(TextWrite);
-
-				if (ExitCode == COM_OBJECT_OPERATION_HUNG) NumberOfHungComObjects++;
-				else NumberOfFailedComTests++;
-
-				if (AppendFile(hFile, szTempName) != SUCCESS)
-				{
-					sprintf(TextWrite, "*******************************************************************************\r\n");
-					WriteTextToLog(TextWrite);
-					sprintf(TextWrite, "ERROR - Appending COM Test Log File\r\n");
-					WriteTextToLog(TextWrite);
-					sprintf(TextWrite, "*******************************************************************************\r\n");
-					WriteTextToLog(TextWrite);
-				}
-			}
-			else DeleteHTMLResults();
-			DeleteTempResultsFile(szTempName);
-
+			if (ExitCode == GET_TYPE_INFO_FAILED)
+				g_NumberOfComObjectsWithOutTypeInfo++;
+			else
+				g_NumberOfOtherCOM_Errors++;
 		}
-		else NumberOfComObjectsWithKillBit++;
-	}
-	return(0);
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static void MoveResultsFile(WCHAR *CLSID_Str_Wide)                                //
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static void MoveResultsFile(WCHAR *CLSID_Str_Wide)
-{
-	if ((ExecutionMode == LOAD_IN_IE) ||
-		(ExecutionMode == PARAMS_IN_IE_PROPBAG) ||
-		(ExecutionMode == PARAMS_IN_IE_BINARY_SCAN))
-	{
-		char TempFileNameSource[MAX_PATH];
-		char TempFileNameDest[MAX_PATH];
-		strcpy(TempFileNameSource, lpPathBuffer);
-		if (ExecutionMode == LOAD_IN_IE)
-			strcat(TempFileNameSource, IELOAD_HTML);
-		else strcat(TempFileNameSource, PARAMS_HTML);
-		sprintf(TempFileNameDest, "%ws", CLSID_Str_Wide);
-		if (ExecutionMode == LOAD_IN_IE) strcat(TempFileNameDest, "_load.html");
-		else if (ExecutionMode == PARAMS_IN_IE_PROPBAG) strcat(TempFileNameDest, "_param_pb.html");
-		else if (ExecutionMode == PARAMS_IN_IE_BINARY_SCAN) strcat(TempFileNameDest, "_param_bs.html");
-		CopyFile(TempFileNameSource, TempFileNameDest, FALSE);
-		DeleteTempResultsFile(TempFileNameSource);
-	}
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static void DeleteHTMLResults(void)                                               //
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static void DeleteHTMLResults(void)
-{
-	if ((ExecutionMode == LOAD_IN_IE) ||
-		(ExecutionMode == PARAMS_IN_IE_PROPBAG) ||
-		(ExecutionMode == PARAMS_IN_IE_BINARY_SCAN))
-	{
-		char TempFileNameSource[MAX_PATH];
-		strcpy(TempFileNameSource, lpPathBuffer);
-		if (ExecutionMode == LOAD_IN_IE)
-			strcat(TempFileNameSource, IELOAD_HTML);
-		else strcat(TempFileNameSource, PARAMS_HTML);
-		DeleteTempResultsFile(TempFileNameSource);
-	}
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static void DeleteTempResultsFile(char *FileName)                                 //
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static void DeleteTempResultsFile(char *FileName)
-{
-	DWORD RetryCount = 0;
-	DWORD LastError;
-	while (1)
-	{
-		if (DeleteFile(FileName) == 0)
+		else if (ExitCode == SUCCESS)
 		{
-			LastError = GetLastError();
-			if (LastError == ERROR_SHARING_VIOLATION)
-			{
-				if (RetryCount < 10)
-				{
-					RetryCount++;
-					Sleep(2000);
-					continue;
-				}
-				else break;
-			}
-			else break;
-		}
-		else break;
-	}
-}
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// static int AppendFile(HANDLE hAppend, char *FileNameToAppend)                     //
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static int AppendFile(HANDLE hAppend, char *FileNameToAppend)
-{
-	HANDLE hfile;
-	DWORD  dwBytesRead, dwBytesWritten, RetryCount = 0;
-
-	BYTE   buff[4096];
-	int    RetVal = SUCCESS;
-	if (hAppend == INVALID_HANDLE_VALUE) return(APPEND_FILE_FAILED);
-
-	while (1)
-	{
-		hfile = CreateFile(FileNameToAppend,// File name
-			GENERIC_READ,             // open for reading
-			0,                        // do not share
-			NULL,                     // no security
-			OPEN_EXISTING,            // existing file only
-			FILE_ATTRIBUTE_NORMAL,    // normal file
-			NULL);                    // no attr. template
-
-
-		if (hfile == INVALID_HANDLE_VALUE)
-		{
-			if (GetLastError() == ERROR_SHARING_VIOLATION)
-			{
-				if (RetryCount < 5)
-				{
-					RetryCount++;
-					Sleep(2000);
-					continue;
-				}
-				else
-				{
-					printf("Append Open File Failed %d\n", GetLastError());
-					return(APPEND_FILE_FAILED);
-				}
-			}
+			if (g_ExecutionMode != GEN_INTERFACE_LISTINGS)
+				g_NumberOfComPassTest++;
 			else
 			{
-				printf("Append Open File Failed %d\n", GetLastError());
-				return(APPEND_FILE_FAILED);
+				if (LogFileContents(szTempName) != SUCCESS)
+					LogError("Failed to append COM Test Log File");
 			}
 		}
-		else break;
-	}
 
-	do
-	{
-		if (ReadFile(hfile, buff, sizeof(buff), &dwBytesRead, NULL))
+		if (ExitCode == USER_ABORT)
 		{
-			if (WriteFile(hAppend, buff, dwBytesRead, &dwBytesWritten, NULL) == 0)
-			{
-				RetVal = APPEND_FILE_FAILED;
-			}
+			LogInfo("*******************************************************************************");
+			LogInfo("%s", ErrorString(ExitCode));
+			LogInfo("*******************************************************************************");
+			return (0);
 		}
-	} while (dwBytesRead == sizeof(buff));
+		if (ExitCode < 0)
+		{
+			if (ExitCode == COM_OBJECT_OPERATION_HUNG)
+				g_NumberOfHungComObjects++;
+			else
+				g_NumberOfFailedComTests++;
 
-	CloseHandle(hfile);
-	return(RetVal);
+			LogInfo("*******************************************************************************");
+			LogInfo("%ls-%s", COM_ObjectInfo.CLSID_Str_Wide, COM_ObjectInfo.CLSID_Description);
+			LogInfo("ERROR - %s (0x%x)", ErrorString(ExitCode), ExitCode);
+			LogInfo("*******************************************************************************");
+
+			if (LogFileContents(szTempName) != SUCCESS)
+				LogError("Failed to append COM Test Log File");
+		}
+	}
+	return (0);
 }
 
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// void WriteTextToLog(char *Text)                             //
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-
-static void WriteTextToLog(char *Text)
+static void DeleteTempResultsFile(PCSTR FileName)
 {
-	DWORD BytesToWrite = (DWORD)strlen(Text);
-	DWORD BytesWritten = 0;
-
-	while (BytesToWrite)
+	for (int RetryCount = 0; RetryCount < 10; ++RetryCount)
 	{
-		if (WriteFile(hFile, Text, BytesToWrite, &BytesWritten, 0) == 0)
-		{
-			printf("File write error\n");
-			return;
-		}
-		Text += BytesWritten;
-		BytesToWrite -= BytesWritten;
+		if (RetryCount > 0)
+			::Sleep(2000);
+
+		if (::DeleteFileA(FileName))
+			break;
+		if (::GetLastError() != ERROR_SHARING_VIOLATION)
+			break;
 	}
 }
 
-////////////////////////////////////////////////////////////////////////////////////////
-///                                                                                   //
-/// int TestCOMObject(COM_ObjectInfoType *COM_ObjectInfo,char *LogFile)               //
-///                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////
-static int TestCOMObject(COM_ObjectInfoType *COM_ObjectInfo, char *LogFile)
+static int LogFileContents(PCSTR FileNameToAppend)
 {
-	STARTUPINFO         si;
-	PROCESS_INFORMATION pi;
-	int                 ExitCode;
-	char                CommandLine[1024 + 512];
-	bool                ReTry;
-	HANDLE              Handles[2];
-	DWORD               WaitResult;
+	HANDLE hfile = INVALID_HANDLE_VALUE;
+	for (int RetryCount = 0; RetryCount < 5; ++RetryCount)
+	{
+		if (RetryCount > 0)
+			::Sleep(2000);
 
-	ZeroMemory(&si, sizeof(si));
-	si.cb = sizeof(si);
-	ZeroMemory(&pi, sizeof(pi));
-	if (ExecutionMode == GEN_INTERFACE_LISTINGS)
-		sprintf(CommandLine, "%s -g -c %ws -o %s", TESTANDREPORT, COM_ObjectInfo->CLSID_Str_Wide, LogFile);
-	else if (ExecutionMode == LOAD_IN_IE)
-		sprintf(CommandLine, "%s -l -c %ws -o %s", TESTANDREPORT, COM_ObjectInfo->CLSID_Str_Wide, LogFile);
-	else if (ExecutionMode == PARAMS_IN_IE_PROPBAG)
-		sprintf(CommandLine, "%s -p -c %ws -o %s", TESTANDREPORT, COM_ObjectInfo->CLSID_Str_Wide, LogFile);
-	else if (ExecutionMode == PARAMS_IN_IE_BINARY_SCAN)
-		sprintf(CommandLine, "%s -s -c %ws -o %s", TESTANDREPORT, COM_ObjectInfo->CLSID_Str_Wide, LogFile);
-	else if (ExecutionMode == PRINT_COM_OBJECT_INFO)
-		sprintf(CommandLine, "%s -i -c %ws -o %s", TESTANDREPORT, COM_ObjectInfo->CLSID_Str_Wide, LogFile);
+		hfile = ::CreateFileA(FileNameToAppend,
+			GENERIC_READ,          // open for reading
+			0,                     // do not share
+			nullptr,               // no security
+			OPEN_EXISTING,         // existing file only
+			FILE_ATTRIBUTE_NORMAL, // normal file
+			nullptr);              // no attr. template
+
+		if (hfile != INVALID_HANDLE_VALUE)
+			break;
+		if (::GetLastError() != ERROR_SHARING_VIOLATION)
+			break;
+	}
+	if (hfile == INVALID_HANDLE_VALUE)
+	{
+		LogError("Append Open File Failed : %d", ::GetLastError());
+		return APPEND_FILE_FAILED;
+	}
+	ON_EXIT_SCOPE(::CloseHandle(hfile));
+
+	DWORD dwBytesRead;
+	BYTE buff[4096];
+	while (::ReadFile(hfile, buff, sizeof(buff), &dwBytesRead, nullptr) &&
+		dwBytesRead > 0)
+	{
+		DWORD dwBytesWritten = 0;
+		while (dwBytesWritten < dwBytesRead)
+		{
+			DWORD numWritten;
+			if (!::WriteFile(g_LogFileHandle, buff + dwBytesWritten, dwBytesRead - dwBytesWritten, &numWritten, nullptr))
+				return APPEND_FILE_FAILED;
+
+			dwBytesWritten += numWritten;
+		}
+	}
+	return SUCCESS;
+}
+
+static int TestCOMObject(COM_ObjectInfoType *COM_ObjectInfo, PCSTR LogFile)
+{
+	char CommandLine[MAX_PATH + 50 + MAX_PATH];
+	if (g_ExecutionMode == GEN_INTERFACE_LISTINGS)
+		sprintf(CommandLine, "%s -g -c %ls -o %s", TESTANDREPORT, COM_ObjectInfo->CLSID_Str_Wide, LogFile);
 	else
-		sprintf(CommandLine, "%s -t -c %ws -o %s", TESTANDREPORT, COM_ObjectInfo->CLSID_Str_Wide, LogFile);
-	// Start the child process. 
-	if (!CreateProcess(
-		TESTANDREPORT,    // module name 
-		CommandLine,        // Command line. 
-		NULL,             // Process handle not inheritable. 
-		NULL,             // Thread handle not inheritable. 
-		FALSE,            // Set handle inheritance to FALSE. 
-		0,                // No creation flags. 
-		NULL,             // Use parent's environment block. 
-		NULL,             // Use parent's starting directory. 
-		&si,              // Pointer to STARTUPINFO structure.
-		&pi)             // Pointer to PROCESS_INFORMATION structure.
+		sprintf(CommandLine, "%s -t -c %ls -o %s", TESTANDREPORT, COM_ObjectInfo->CLSID_Str_Wide, LogFile);
+
+	// Start the child process.
+	STARTUPINFO si = { 0 };
+	si.cb = sizeof(si);
+	PROCESS_INFORMATION pi = { 0 };
+	if (!::CreateProcessA(TESTANDREPORT, // module name
+		CommandLine,   // Command line.
+		nullptr,          // Process handle not inheritable.
+		nullptr,          // Thread handle not inheritable.
+		FALSE,         // Set handle inheritance to FALSE.
+		0,             // No creation flags.
+		nullptr,          // Use parent's environment block.
+		nullptr,          // Use parent's starting directory.
+		&si,           // Pointer to STARTUPINFO structure.
+		&pi)           // Pointer to PROCESS_INFORMATION structure.
 		)
 	{
-		printf("CreateProcess failed (%d).\n", GetLastError());
-		return(CREATE_PROCESS_FAILED);
+		LogError("CreateProcess failed (%d).", GetLastError());
+		return CREATE_PROCESS_FAILED;
 	}
-	Handles[0] = pi.hProcess;
-	Handles[1] = TestHarnessKillEvent;
-	// Wait until child process exits.
-	ReTry = true;
-	do
-	{
-		WaitResult = WaitForMultipleObjects(2, Handles, false, COM_OBJECT_TEST_TIME_LIMIT_IN_SECONDS * 1000);
-		if ((WaitResult == WAIT_TIMEOUT) || (WaitResult == (WAIT_OBJECT_0 + 1)))
-		{
-			if (WaitResult == (WAIT_OBJECT_0 + 1))
-			{
-				TerminateProcess(pi.hProcess, (UINT)USER_ABORT);
-				CloseHandle(pi.hProcess);
-				CloseHandle(pi.hThread);
-				KillProcessesNotInSnapShot(SnapShotOfProcesses);
-				return(USER_ABORT);
-			}
-			else
-			{
-				printf("COM Object Hung During Test - Terminating Test Process\n");
-				TerminateProcess(pi.hProcess, (UINT)COM_OBJECT_OPERATION_HUNG);
-				CloseHandle(pi.hProcess);
-				CloseHandle(pi.hThread);
-				Sleep(1000);
-				KillProcessesNotInSnapShot(SnapShotOfProcesses);
-				return(COM_OBJECT_OPERATION_HUNG);
-			}
-		}
-		ReTry = false;
-	} while (ReTry);
 
-	GetExitCodeProcess(pi.hProcess, (LPDWORD)&ExitCode);
+	// Wait until child process exits.
+	while(1)
+	{
+		HANDLE Handles[] = { pi.hProcess, g_TestHarnessKillEvent };
+		const auto WaitResult = ::WaitForMultipleObjects(
+			_countof(Handles), Handles, false,
+			COM_OBJECT_TEST_TIME_LIMIT_IN_SECONDS * 1000);
+
+		if (WaitResult == (WAIT_OBJECT_0 + 1))
+		{
+			TerminateProcess(pi.hProcess, (UINT)USER_ABORT);
+			CloseHandle(pi.hProcess);
+			CloseHandle(pi.hThread);
+			KillProcessesNotInSnapShot(g_SnapShotOfProcesses);
+			return USER_ABORT;
+		}
+
+		if (WaitResult == WAIT_TIMEOUT)
+		{
+			printf("COM Object Hung During Test - Terminating Test Process\n");
+			TerminateProcess(pi.hProcess, (UINT)COM_OBJECT_OPERATION_HUNG);
+			CloseHandle(pi.hProcess);
+			CloseHandle(pi.hThread);
+			Sleep(1000);
+			KillProcessesNotInSnapShot(g_SnapShotOfProcesses);
+			return COM_OBJECT_OPERATION_HUNG;
+		}
+
+		break;
+	};
+
+	int ExitCode = 0;
+	::GetExitCodeProcess(pi.hProcess, (DWORD*)&ExitCode);
 	if (ExitCode == BUFFER_OVERRUN_FAULT_CRT_GENERATED)
 		ExitCode = BUFFER_OVERRUN_FAULT;
-	//printf("exit code = 0x%08X %d\n", ExitCode,ExitCode);
+	// printf("exit code = 0x%08X %u\n", ExitCode, ExitCode);
 
-   // Close process and thread handles. 
-	CloseHandle(pi.hProcess);
-	CloseHandle(pi.hThread);
-	KillProcessesNotInSnapShot(SnapShotOfProcesses);
-	return(ExitCode);
+	// Close process and thread handles.
+	::CloseHandle(pi.hProcess);
+	::CloseHandle(pi.hThread);
+	KillProcessesNotInSnapShot(g_SnapShotOfProcesses);
+	return ExitCode;
 }
